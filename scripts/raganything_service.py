@@ -936,35 +936,44 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
             data = self.read_json_body()
             query = data.get("query", "")
             mode = data.get("mode", "hybrid")  # hybrid, local, global
+            context_only = data.get("context_only", False)
 
             if not query:
                 self.send_json(400, {"success": False, "error": "Missing query"})
                 return
 
             # Query RAGAnything (sync)
-            result = self._query_sync(query, mode)
+            result = self._query_sync(query, mode, context_only=context_only)
             self.send_json(200, result)
 
         except Exception as e:
             self.send_json(500, {"success": False, "error": str(e)})
 
-    def _query_sync(self, query: str, mode: str) -> dict:
+    def _query_sync(self, query: str, mode: str, context_only: bool = False) -> dict:
         """Query the knowledge graph (sync version)."""
         try:
             rag = get_rag_instance()
 
-            print(f"[RAG] Query: {query[:50]}... (mode={mode})")
+            print(f"[RAG] Query: {query[:50]}... (mode={mode}, context_only={context_only})")
 
             # Use sync query since our LLM functions are synchronous
             # Disable VLM enhanced to avoid async issues with sync vision func
-            result = rag.query(query, mode=mode, vlm_enhanced=False)
+            result = rag.query(
+                query, mode=mode, vlm_enhanced=False,
+                only_need_context=context_only,
+            )
 
-            return {
+            response = {
                 "success": True,
                 "query": query,
                 "mode": mode,
-                "answer": result,
+                "context_only": context_only,
             }
+            if context_only:
+                response["context"] = result
+            else:
+                response["answer"] = result
+            return response
 
         except Exception as e:
             import traceback

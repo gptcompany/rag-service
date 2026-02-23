@@ -2,6 +2,19 @@
 
 Full RAG (Retrieval Augmented Generation) service for academic papers.
 
+## Quick Setup
+
+```bash
+cd /media/sam/1TB/rag-service
+.venv/bin/python3 -m scripts.setup    # Interactive guided setup
+```
+
+The wizard checks Python, MinerU models, Ollama + qwen3:8b, LibreOffice (optional), OPENAI_API_KEY, and service health.
+
+Subcommands: `python3 -m scripts.setup deps | models | service | verify`
+
+**Requirements**: OPENAI_API_KEY (via dotenvx), Ollama with qwen3:8b model, MinerU models (~2GB).
+
 ## What's New in v3.1
 
 - **Local Embeddings**: Uses `bge-large-en-v1.5` (sentence-transformers) - no OpenAI dependency

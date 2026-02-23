@@ -32,13 +32,14 @@ from enum import Enum
 from typing import Optional
 
 # Add raganything to path
-sys.path.insert(0, "/media/sam/1TB/rag-service/raganything")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "raganything"))
 
 # Configuration
 HOST = "0.0.0.0"
 PORT = 8767
-OUTPUT_BASE = "/media/sam/1TB/rag-service/data/extracted"
-RAG_STORAGE = "/media/sam/1TB/rag-service/data/rag_knowledge_base"  # Persistent KG storage
+_SERVICE_ROOT = Path(__file__).resolve().parent.parent
+OUTPUT_BASE = os.getenv("RAG_OUTPUT_BASE", str(_SERVICE_ROOT / "data" / "extracted"))
+RAG_STORAGE = os.getenv("RAG_STORAGE_DIR", str(_SERVICE_ROOT / "data" / "rag_knowledge_base"))
 PROCESS_TIMEOUT = 14400  # 4 hours (MinerU on CPU is very slow)
 MAX_CONCURRENT_JOBS = 2  # Max parallel MinerU processes
 MAX_QUEUE_DEPTH = 10  # Max jobs waiting in queue (total capacity = 2 + 10 = 12)
@@ -67,6 +68,13 @@ RERANK_MODEL = "BAAI/bge-reranker-v2-m3"  # Best multilingual reranker
 # Parser config (MinerU primary, docling fallback)
 PARSER_PAGE_THRESHOLD = int(os.getenv("RAG_PARSER_THRESHOLD", "15"))  # Pages
 DEFAULT_PARSER = "mineru"  # Default for documents that can't be measured
+
+# Path mapping: host ↔ container translation (for Docker/container deployments)
+# Set RAG_HOST_PATH_PREFIX and RAG_CONTAINER_PATH_PREFIX to enable path translation.
+# Set RAG_PATH_MAPPINGS for multiple mappings: "container_prefix:host_prefix,..."
+_HOST_PATH_PREFIX = os.getenv("RAG_HOST_PATH_PREFIX", "")
+_CONTAINER_PATH_PREFIX = os.getenv("RAG_CONTAINER_PATH_PREFIX", "/workspace/")
+_PATH_MAPPINGS = os.getenv("RAG_PATH_MAPPINGS", "")  # e.g. "/workspace/data/:/srv/data/,/workspace/alt/:/mnt/alt/"
 
 # PDF hash deduplication storage
 PDF_HASH_DB = os.path.join(RAG_STORAGE, "processed_pdfs.json")
@@ -438,8 +446,8 @@ class AsyncJobQueue:
                 if existing:
                     print(f"[JobQueue] SKIP (hash match): {job.paper_id} - same as {existing['paper_id']}")
                     output_dir_container = existing["output_dir"]
-                    if not output_dir_container.startswith("/workspace/"):
-                        output_dir_container = existing["output_dir"].replace("/media/sam/", "/workspace/")
+                    if _HOST_PATH_PREFIX and not output_dir_container.startswith(_CONTAINER_PATH_PREFIX):
+                        output_dir_container = existing["output_dir"].replace(_HOST_PATH_PREFIX, _CONTAINER_PATH_PREFIX)
                     return {
                         "success": True,
                         "indexed": True,
@@ -500,7 +508,10 @@ class AsyncJobQueue:
                 break
 
             # Convert path for container
-            output_dir_container = output_dir.replace("/media/sam/", "/workspace/")
+            if _HOST_PATH_PREFIX:
+                output_dir_container = output_dir.replace(_HOST_PATH_PREFIX, _CONTAINER_PATH_PREFIX)
+            else:
+                output_dir_container = output_dir
 
             # Mark as processed with hash
             hash_store.mark_processed(pdf_hash, job.paper_id, output_dir, selected_parser)
@@ -839,7 +850,10 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
                 if md_files:
                     # Already processed - return cached result
                     markdown_length = sum(f.stat().st_size for f in md_files)
-                    output_dir_container = output_dir.replace("/media/sam/", "/workspace/")
+                    if _HOST_PATH_PREFIX:
+                        output_dir_container = output_dir.replace(_HOST_PATH_PREFIX, _CONTAINER_PATH_PREFIX)
+                    else:
+                        output_dir_container = output_dir
 
                     print(f"[RAG] SKIP (cached): {paper_id} - already processed")
 
@@ -880,9 +894,13 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
                     return
 
             # Convert container path to host path
-            if pdf_path.startswith("/workspace/"):
-                pdf_path = pdf_path.replace("/workspace/1TB/", "/media/sam/1TB/")
-                pdf_path = pdf_path.replace("/workspace/3TB-WDC/", "/media/sam/3TB-WDC/")
+            if pdf_path.startswith(_CONTAINER_PATH_PREFIX) and _PATH_MAPPINGS:
+                for mapping in _PATH_MAPPINGS.split(","):
+                    if ":" in mapping:
+                        container_pfx, host_pfx = mapping.split(":", 1)
+                        pdf_path = pdf_path.replace(container_pfx, host_pfx)
+            elif pdf_path.startswith(_CONTAINER_PATH_PREFIX) and _HOST_PATH_PREFIX:
+                pdf_path = pdf_path.replace(_CONTAINER_PATH_PREFIX, _HOST_PATH_PREFIX)
 
             if not os.path.exists(pdf_path):
                 self.send_json(404, {"success": False, "error": f"PDF not found: {pdf_path}"})

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-SERVICE_ROOT = Path("/media/sam/1TB/rag-service")
+SERVICE_ROOT = Path(__file__).resolve().parent.parent.parent
 VENV_DIR = SERVICE_ROOT / ".venv"
 RAGANYTHING_DIR = SERVICE_ROOT / "raganything"
 

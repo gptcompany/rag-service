@@ -6,7 +6,8 @@ from pathlib import Path
 
 from rich.console import Console
 
-VENV_PYTHON = Path("/media/sam/1TB/rag-service/.venv/bin/python3")
+_SERVICE_ROOT = Path(__file__).resolve().parent.parent.parent
+VENV_PYTHON = _SERVICE_ROOT / ".venv" / "bin" / "python3"
 
 # MinerU models expected in HuggingFace cache
 HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"

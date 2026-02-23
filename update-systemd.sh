@@ -1,19 +1,26 @@
 #!/bin/bash
-# Update RAGAnything systemd unit to point to new rag-service location
-# Run: sudo bash /media/sam/1TB/rag-service/update-systemd.sh
+# Update RAGAnything systemd unit to point to rag-service location
+# Run: sudo bash /path/to/rag-service/update-systemd.sh
+#
+# Override SERVICE_ROOT via env var or edit default below:
+#   RAG_SERVICE_ROOT=/opt/rag-service sudo bash update-systemd.sh
 
 set -e
 
-cat > /etc/systemd/system/raganything.service <<'EOF'
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVICE_ROOT="${RAG_SERVICE_ROOT:-$SCRIPT_DIR}"
+SERVICE_USER="${RAG_SERVICE_USER:-$(whoami)}"
+
+cat > /etc/systemd/system/raganything.service <<EOF
 [Unit]
 Description=RAGanything Service - Full RAG for Academic Papers
 After=network.target
 
 [Service]
 Type=simple
-User=sam
-WorkingDirectory=/media/sam/1TB/rag-service
-ExecStart=/media/sam/1TB/rag-service/scripts/raganything_start.sh
+User=${SERVICE_USER}
+WorkingDirectory=${SERVICE_ROOT}
+ExecStart=${SERVICE_ROOT}/scripts/raganything_start.sh
 
 # Anti-loop protection
 Restart=on-failure
@@ -39,4 +46,4 @@ echo "=== Health check ==="
 curl -s http://localhost:8767/health | python3 -m json.tool
 
 echo ""
-echo "Done! RAGAnything now runs from /media/sam/1TB/rag-service/"
+echo "Done! RAGAnything now runs from ${SERVICE_ROOT}/"

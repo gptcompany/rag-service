@@ -4,12 +4,14 @@ from __future__ import annotations
 import json
 import urllib.request
 import urllib.error
+from pathlib import Path
 
 from rich.console import Console
 
 SERVICE_URL = "http://localhost:8767"
 HEALTH_ENDPOINT = f"{SERVICE_URL}/health"
-START_SCRIPT = "/media/sam/1TB/rag-service/scripts/raganything_start.sh"
+_SERVICE_ROOT = Path(__file__).resolve().parent.parent.parent
+START_SCRIPT = str(_SERVICE_ROOT / "scripts" / "raganything_start.sh")
 SYSTEMD_UNIT = "raganything.service"
 
 

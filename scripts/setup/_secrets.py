@@ -1,11 +1,14 @@
 """Setup step: Verify required secrets (OPENAI_API_KEY via dotenvx)."""
 from __future__ import annotations
 
+import os
 import subprocess
+from pathlib import Path
 
 from rich.console import Console
 
-ENV_FILE = "/media/sam/1TB/.env"
+_SERVICE_ROOT = Path(__file__).resolve().parent.parent.parent
+ENV_FILE = os.getenv("RAG_ENV_FILE", str(_SERVICE_ROOT / ".env"))
 
 
 class SecretsStep:

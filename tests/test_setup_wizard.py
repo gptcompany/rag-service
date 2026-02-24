@@ -496,6 +496,65 @@ class TestConfigStep:
         from scripts.setup._config import COMPOSE_EXTERNAL_TEMPLATE
         assert "host.docker.internal:host-gateway" in COMPOSE_EXTERNAL_TEMPLATE
 
+    @patch("scripts.setup._config.get_env", return_value=None)
+    @patch("scripts.setup._config.set_env", return_value=True)
+    @patch("scripts.setup._config.discover_ollama_models", return_value=[])
+    @patch("questionary.select")
+    @patch("questionary.text")
+    @patch("questionary.confirm")
+    def test_install_rejects_invalid_custom_embedding_dim(
+        self, mock_confirm, mock_text, mock_select, mock_discover, mock_set, mock_get
+    ):
+        step = self._make_step()
+        console = MagicMock()
+
+        mock_select.return_value.ask.side_effect = [
+            "gpt-4o-mini",  # OpenAI
+            "custom",       # Embedding choice
+        ]
+        mock_text.return_value.ask.side_effect = [
+            "qwen3:8b",                 # Ollama model
+            "BAAI/bge-large-en-v1.5",   # Embedding model
+            "abc",                      # Invalid embedding dim
+        ]
+
+        result = step.install(console)
+        assert result is False
+        mock_set.assert_not_called()
+        assert any("Invalid embedding dimension" in str(c) for c in console.print.call_args_list)
+
+    @patch("scripts.setup._config.get_env", return_value=None)
+    @patch("scripts.setup._config.set_env", return_value=True)
+    @patch("scripts.setup._config.discover_ollama_models", return_value=[])
+    @patch("questionary.select")
+    @patch("questionary.text")
+    @patch("questionary.confirm")
+    def test_install_rejects_invalid_port(
+        self, mock_confirm, mock_text, mock_select, mock_discover, mock_set, mock_get
+    ):
+        from scripts.setup._config_presets import EMBEDDING_PRESETS
+
+        step = self._make_step()
+        console = MagicMock()
+
+        mock_select.return_value.ask.side_effect = [
+            "gpt-4o-mini",        # OpenAI
+            EMBEDDING_PRESETS[0], # Embedding preset
+            "mineru",             # Parser
+        ]
+        mock_text.return_value.ask.side_effect = [
+            "qwen3:8b",  # Ollama model
+            "70000",     # Invalid port
+        ]
+        mock_confirm.return_value.ask.side_effect = [
+            True,  # Reranker enable
+        ]
+
+        result = step.install(console)
+        assert result is False
+        mock_set.assert_not_called()
+        assert any("Invalid port" in str(c) for c in console.print.call_args_list)
+
     @patch("questionary.confirm")
     @patch("scripts.setup._config.get_env", return_value="external")
     def test_generate_docker_files_does_not_overwrite_compose_when_declined(self, mock_get, mock_confirm, tmp_path):

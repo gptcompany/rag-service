@@ -91,3 +91,14 @@ See `scripts/RAGANYTHING_SERVICE_README.md` for examples and operational guidanc
 - If running behind a reverse proxy, set `RAG_TRUST_PROXY_HEADERS=true` only when the proxy is trusted and strips spoofed headers.
 - `RAG_TRUST_PROXY_HEADERS` handling assumes trusted proxies append `X-Forwarded-For` entries; use `RAG_TRUSTED_PROXY_HOPS` to match your proxy hop count.
 - The in-process rate limiter is intentionally simple; for stronger controls use a reverse proxy (nginx/traefik) or API gateway.
+
+## Setup Wizard Cross-Check (Final Round)
+
+Additional setup-wizard fixes applied after cross-check:
+
+- `SecretsStep` no longer shells out via `bash -c` for `dotenvx get` (reduces command-injection risk from `RAG_ENV_FILE` overrides).
+- `DeployStep` now fails loudly if `RAG_DEPLOY_MODE` / `RAG_OLLAMA_MODE` cannot be persisted.
+- `ConfigStep.check()` now requires a minimal complete config set (prevents false positives on partial setup).
+- Docker external compose template now includes `host.docker.internal:host-gateway` for Linux compatibility.
+- Wizard no longer overwrites `docker-compose.yml` silently when an existing file differs (explicit confirmation required).
+- Wizard now validates `embedding_dim` and `port` input before writing `.env`.

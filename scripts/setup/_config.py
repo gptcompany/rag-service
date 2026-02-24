@@ -91,6 +91,19 @@ volumes:
 """
 
 
+def _parse_positive_int(value: str, *, min_value: int = 1, max_value: int | None = None) -> int | None:
+    """Parse a positive integer with optional bounds."""
+    try:
+        parsed = int(value.strip())
+    except (AttributeError, ValueError):
+        return None
+    if parsed < min_value:
+        return None
+    if max_value is not None and parsed > max_value:
+        return None
+    return parsed
+
+
 class ConfigStep:
     name = "Service configuration"
 
@@ -168,8 +181,12 @@ class ConfigStep:
             ).ask()
             if not embed_model or not embed_dim:
                 return False
+            parsed_embed_dim = _parse_positive_int(embed_dim, min_value=1)
+            if parsed_embed_dim is None:
+                console.print("  [red]Invalid embedding dimension (must be a positive integer).[/]")
+                return False
             config[ENV_VARS["embedding_model"]] = embed_model
-            config[ENV_VARS["embedding_dim"]] = embed_dim
+            config[ENV_VARS["embedding_dim"]] = str(parsed_embed_dim)
         else:
             config[ENV_VARS["embedding_model"]] = embed_pick.model
             config[ENV_VARS["embedding_dim"]] = str(embed_pick.dim)
@@ -218,7 +235,11 @@ class ConfigStep:
         port = questionary.text("Service port:", default="8767").ask()
         if port is None:
             return False
-        config[ENV_VARS["port"]] = port
+        parsed_port = _parse_positive_int(port, min_value=1, max_value=65535)
+        if parsed_port is None:
+            console.print("  [red]Invalid port (must be an integer between 1 and 65535).[/]")
+            return False
+        config[ENV_VARS["port"]] = str(parsed_port)
         config[ENV_VARS["host"]] = "0.0.0.0"
 
         enable_vision = questionary.confirm(

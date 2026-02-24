@@ -17,13 +17,14 @@ import sys
 import json
 import asyncio
 import threading
+import time
 import uuid
 import hashlib
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
-from collections import deque
+from collections import deque, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -75,9 +76,117 @@ DEFAULT_PARSER = os.getenv("RAG_DEFAULT_PARSER", "mineru")
 _HOST_PATH_PREFIX = os.getenv("RAG_HOST_PATH_PREFIX", "")
 _CONTAINER_PATH_PREFIX = os.getenv("RAG_CONTAINER_PATH_PREFIX", "/workspace/")
 _PATH_MAPPINGS = os.getenv("RAG_PATH_MAPPINGS", "")  # e.g. "/workspace/data/:/srv/data/,/workspace/alt/:/mnt/alt/"
+_ALLOWED_PDF_ROOTS_RAW = os.getenv("RAG_ALLOWED_PDF_ROOTS", "")
+ALLOW_UNSAFE_PDF_PATHS = os.getenv("RAG_ALLOW_UNSAFE_PDF_PATHS", "false").lower() == "true"
+MAX_REQUEST_BODY_BYTES = int(os.getenv("RAG_MAX_REQUEST_BODY_BYTES", "1048576"))  # 1 MiB
+RATE_LIMIT_WINDOW_SEC = int(os.getenv("RAG_RATE_LIMIT_WINDOW_SEC", "60"))
+RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RAG_RATE_LIMIT_MAX_REQUESTS", "120"))
+TRUST_PROXY_HEADERS = os.getenv("RAG_TRUST_PROXY_HEADERS", "false").lower() == "true"
 
 # PDF hash deduplication storage
 PDF_HASH_DB = os.path.join(RAG_STORAGE, "processed_pdfs.json")
+
+
+def _build_allowed_pdf_roots() -> tuple[Path, ...]:
+    """Build canonical allowlist for incoming PDF paths."""
+    configured_roots: list[str] = []
+
+    if _ALLOWED_PDF_ROOTS_RAW.strip():
+        configured_roots.extend(p.strip() for p in _ALLOWED_PDF_ROOTS_RAW.split(",") if p.strip())
+    else:
+        if _HOST_PATH_PREFIX:
+            configured_roots.append(_HOST_PATH_PREFIX)
+        for mapping in _PATH_MAPPINGS.split(","):
+            if ":" not in mapping:
+                continue
+            _, host_pfx = mapping.split(":", 1)
+            host_pfx = host_pfx.strip()
+            if host_pfx:
+                configured_roots.append(host_pfx)
+        configured_roots.append(str(_SERVICE_ROOT / "data"))
+
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for raw_root in configured_roots:
+        try:
+            root = Path(raw_root).expanduser().resolve(strict=False)
+        except Exception:
+            continue
+        root_key = str(root)
+        if root_key in seen:
+            continue
+        seen.add(root_key)
+        roots.append(root)
+    return tuple(roots)
+
+
+ALLOWED_PDF_ROOTS = _build_allowed_pdf_roots()
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def translate_container_to_host_path(pdf_path: str) -> str:
+    """Translate container paths to host paths using configured mappings."""
+    mapped_path = pdf_path
+
+    if mapped_path.startswith(_CONTAINER_PATH_PREFIX) and _PATH_MAPPINGS:
+        for mapping in _PATH_MAPPINGS.split(","):
+            if ":" not in mapping:
+                continue
+            container_pfx, host_pfx = mapping.split(":", 1)
+            container_pfx = container_pfx.strip()
+            host_pfx = host_pfx.strip()
+            if container_pfx and mapped_path.startswith(container_pfx):
+                return mapped_path.replace(container_pfx, host_pfx, 1)
+
+    if mapped_path.startswith(_CONTAINER_PATH_PREFIX) and _HOST_PATH_PREFIX:
+        return mapped_path.replace(_CONTAINER_PATH_PREFIX, _HOST_PATH_PREFIX, 1)
+
+    return mapped_path
+
+
+def sanitize_pdf_path(pdf_path: str) -> str:
+    """Validate and canonicalize pdf_path from API input."""
+    if not isinstance(pdf_path, str):
+        raise ValueError("pdf_path must be a string")
+
+    raw_path = pdf_path.strip()
+    if not raw_path:
+        raise ValueError("pdf_path is empty")
+    if "\x00" in raw_path:
+        raise ValueError("pdf_path contains invalid characters")
+
+    translated_path = translate_container_to_host_path(raw_path)
+    candidate = Path(translated_path).expanduser()
+    if not candidate.is_absolute():
+        raise ValueError("pdf_path must be an absolute path")
+
+    try:
+        resolved = candidate.resolve(strict=True)
+    except FileNotFoundError:
+        raise FileNotFoundError("PDF not found")
+    except OSError as exc:
+        raise ValueError("Invalid pdf_path") from exc
+
+    if not resolved.is_file():
+        raise FileNotFoundError("PDF not found")
+    if resolved.suffix.lower() != ".pdf":
+        raise ValueError("pdf_path must point to a .pdf file")
+    if not os.access(resolved, os.R_OK):
+        raise PermissionError("PDF is not readable")
+
+    if not ALLOW_UNSAFE_PDF_PATHS and ALLOWED_PDF_ROOTS:
+        allowed = any(_is_relative_to(resolved, root) for root in ALLOWED_PDF_ROOTS)
+        if not allowed:
+            raise PermissionError("pdf_path is outside allowed directories")
+
+    return str(resolved)
 
 
 # =============================================================================
@@ -335,6 +444,33 @@ class CircuitBreaker:
             }
 
 
+class IpRateLimiter:
+    """Simple sliding-window per-IP rate limiter."""
+
+    def __init__(self, max_requests: int = RATE_LIMIT_MAX_REQUESTS, window_sec: int = RATE_LIMIT_WINDOW_SEC):
+        self.max_requests = max_requests
+        self.window_sec = window_sec
+        self._requests = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def allow(self, client_ip: str) -> tuple[bool, int]:
+        if self.max_requests <= 0 or self.window_sec <= 0:
+            return True, 0
+
+        now = time.monotonic()
+        with self._lock:
+            bucket = self._requests[client_ip]
+            while bucket and (now - bucket[0]) >= self.window_sec:
+                bucket.popleft()
+
+            if len(bucket) >= self.max_requests:
+                retry_after = max(1, int(self.window_sec - (now - bucket[0])))
+                return False, retry_after
+
+            bucket.append(now)
+            return True, 0
+
+
 class AsyncJobQueue:
     """Async job queue with background processing."""
 
@@ -586,6 +722,7 @@ class AsyncJobQueue:
 
 # Global instances
 circuit_breaker = CircuitBreaker()
+ip_rate_limiter = IpRateLimiter()
 job_queue = AsyncJobQueue()
 rag_instance = None
 rag_lock = threading.Lock()
@@ -803,14 +940,70 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
 
+    def _send_internal_error(self, _exc: Exception):
+        """Log full error server-side, return generic error to clients."""
+        import traceback
+
+        traceback.print_exc()
+        self.send_json(500, {"success": False, "error": "Internal server error"})
+
+    def _get_client_ip(self) -> str:
+        """Return client IP; proxy headers are opt-in."""
+        if TRUST_PROXY_HEADERS:
+            forwarded_for = self.headers.get("X-Forwarded-For", "")
+            if forwarded_for:
+                return forwarded_for.split(",")[0].strip()
+        return self.client_address[0] if self.client_address else "unknown"
+
+    def _should_rate_limit(self, path: str) -> bool:
+        """Keep health/status endpoints accessible for monitoring."""
+        return path not in ("/health", "/status")
+
+    def _enforce_rate_limit(self) -> bool:
+        if not self._should_rate_limit(self.path):
+            return True
+
+        client_ip = self._get_client_ip()
+        allowed, retry_after = ip_rate_limiter.allow(client_ip)
+        if allowed:
+            return True
+
+        self.send_json(
+            429,
+            {
+                "success": False,
+                "error": "Rate limit exceeded",
+                "retry_after": retry_after,
+            },
+        )
+        return False
+
     def read_json_body(self) -> dict:
         """Read JSON from request body."""
-        content_length = int(self.headers.get("Content-Length", 0))
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except ValueError as exc:
+            raise ValueError("Invalid Content-Length header") from exc
+
+        if content_length < 0:
+            raise ValueError("Invalid Content-Length header")
+        if content_length > MAX_REQUEST_BODY_BYTES:
+            raise ValueError(f"Request body too large (max {MAX_REQUEST_BODY_BYTES} bytes)")
+
         body = self.rfile.read(content_length).decode("utf-8")
-        return json.loads(body) if body else {}
+        if not body:
+            return {}
+
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Invalid JSON body") from exc
 
     def do_POST(self):
         """Handle POST requests."""
+        if not self._enforce_rate_limit():
+            return
+
         if self.path == "/process":
             self.handle_process()
         elif self.path == "/process/sync":
@@ -913,18 +1106,7 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
                     )
                     return
 
-            # Convert container path to host path
-            if pdf_path.startswith(_CONTAINER_PATH_PREFIX) and _PATH_MAPPINGS:
-                for mapping in _PATH_MAPPINGS.split(","):
-                    if ":" in mapping:
-                        container_pfx, host_pfx = mapping.split(":", 1)
-                        pdf_path = pdf_path.replace(container_pfx, host_pfx)
-            elif pdf_path.startswith(_CONTAINER_PATH_PREFIX) and _HOST_PATH_PREFIX:
-                pdf_path = pdf_path.replace(_CONTAINER_PATH_PREFIX, _HOST_PATH_PREFIX)
-
-            if not os.path.exists(pdf_path):
-                self.send_json(404, {"success": False, "error": f"PDF not found: {pdf_path}"})
-                return
+            pdf_path = sanitize_pdf_path(pdf_path)
 
             # Submit job (returns immediately)
             job = job_queue.submit_job(paper_id, pdf_path, webhook_url, force_parser, force_reprocess)
@@ -942,11 +1124,14 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
                 },
             )
 
+        except ValueError as e:
+            self.send_json(400, {"success": False, "error": str(e)})
+        except PermissionError as e:
+            self.send_json(403, {"success": False, "error": str(e)})
+        except FileNotFoundError as e:
+            self.send_json(404, {"success": False, "error": str(e)})
         except Exception as e:
-            import traceback
-
-            traceback.print_exc()
-            self.send_json(500, {"success": False, "error": str(e)})
+            self._send_internal_error(e)
 
     def handle_process_sync(self):
         """Legacy synchronous processing (for small files only)."""
@@ -984,8 +1169,10 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
             result = self._query_sync(query, mode, context_only=context_only)
             self.send_json(200, result)
 
+        except ValueError as e:
+            self.send_json(400, {"success": False, "error": str(e)})
         except Exception as e:
-            self.send_json(500, {"success": False, "error": str(e)})
+            self._send_internal_error(e)
 
     def _query_sync(self, query: str, mode: str, context_only: bool = False) -> dict:
         """Query the knowledge graph (sync version)."""
@@ -1017,10 +1204,13 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
             import traceback
 
             traceback.print_exc()
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": "Internal query error"}
 
     def do_GET(self):
         """Handle GET requests."""
+        if not self._enforce_rate_limit():
+            return
+
         if self.path == "/health":
             rag_ready = rag_instance is not None
             hash_store = get_hash_store()

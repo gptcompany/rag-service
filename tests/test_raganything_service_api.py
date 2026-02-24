@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import importlib
 import json
+import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -248,8 +249,8 @@ def test_process_endpoint_rejects_invalid_parser(rag_api_server):
 def test_process_cached_result_uses_webhook_helper_with_pinned_ip(rag_api_server, monkeypatch):
     monkeypatch.setattr(svc, "_resolve_webhook_ips", lambda host, port: {"93.184.216.34"})
 
-    paper_id = "arxiv:2401.12345"
-    safe_id = paper_id.replace("arxiv:", "").replace("/", "_").replace(":", "_")
+    paper_id = "arxiv:2401/12:345?bad*id"
+    safe_id = re.sub(r"[^a-zA-Z0-9._-]", "_", paper_id.replace("arxiv:", ""))
     cached_dir = rag_api_server["pdf_root"].parent / "output" / safe_id
     cached_dir.mkdir(parents=True, exist_ok=True)
     (cached_dir / "result.md").write_text("# cached")
@@ -273,6 +274,8 @@ def test_process_cached_result_uses_webhook_helper_with_pinned_ip(rag_api_server
     assert status == 200
     assert data["success"] is True
     assert data["cached"] is True
+    assert "?" not in data["output_dir"]
+    assert "*" not in data["output_dir"]
     assert len(rag_api_server["job_queue"].webhook_calls) == 1
 
     webhook_job = rag_api_server["job_queue"].webhook_calls[0]

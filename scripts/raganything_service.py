@@ -13,6 +13,7 @@ v3.3 - Async job processing + Smart features:
 """
 
 import os
+import re
 import sys
 import json
 import asyncio
@@ -94,6 +95,9 @@ AUTH_EXEMPT_PATHS = tuple(p.strip() for p in _AUTH_EXEMPT_PATHS_RAW.split(",") i
 ALLOW_PRIVATE_WEBHOOK_HOSTS = os.getenv("RAG_ALLOW_PRIVATE_WEBHOOK_HOSTS", "false").lower() == "true"
 _ALLOWED_WEBHOOK_HOSTS_RAW = os.getenv("RAG_ALLOWED_WEBHOOK_HOSTS", "")
 ALLOWED_WEBHOOK_HOSTS = tuple(h.strip().lower() for h in _ALLOWED_WEBHOOK_HOSTS_RAW.split(",") if h.strip())
+for _wh_pattern in ALLOWED_WEBHOOK_HOSTS:
+    if not _wh_pattern.startswith(".") and "." not in _wh_pattern:
+        print(f"[Config] WARNING: RAG_ALLOWED_WEBHOOK_HOSTS pattern '{_wh_pattern}' has no dot — use '.{_wh_pattern}' for suffix matching")
 
 # PDF hash deduplication storage
 PDF_HASH_DB = os.path.join(RAG_STORAGE, "processed_pdfs.json")
@@ -749,7 +753,7 @@ class AsyncJobQueue:
             rag = get_rag_instance()
 
             # Create output directory
-            safe_id = job.paper_id.replace("arxiv:", "").replace("/", "_").replace(":", "_")
+            safe_id = re.sub(r"[^a-zA-Z0-9._-]", "_", job.paper_id.replace("arxiv:", ""))
             output_dir = os.path.join(OUTPUT_BASE, safe_id)
             os.makedirs(output_dir, exist_ok=True)
 
@@ -1261,7 +1265,7 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
             force_reprocess = data.get("force_reprocess", False)
 
             # DEDUPLICATION CHECK (before PDF check - cached don't need PDF)
-            safe_id = paper_id.replace("arxiv:", "").replace("/", "_").replace(":", "_")
+            safe_id = re.sub(r"[^a-zA-Z0-9._-]", "_", paper_id.replace("arxiv:", ""))
             output_dir = os.path.join(OUTPUT_BASE, safe_id)
 
             if not force_reprocess and os.path.exists(output_dir):

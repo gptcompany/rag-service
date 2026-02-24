@@ -471,6 +471,17 @@ class AsyncJobQueue:
             output_dir = os.path.join(OUTPUT_BASE, safe_id)
             os.makedirs(output_dir, exist_ok=True)
 
+            # Download and save LaTeX macros for arXiv papers
+            if job.paper_id.startswith("arxiv:"):
+                try:
+                    from raganything.latex_macros import extract_and_save_macros
+                    arxiv_id = job.paper_id.replace("arxiv:", "")
+                    macros = extract_and_save_macros(arxiv_id, output_dir)
+                    if macros:
+                        print(f"[JobQueue] Extracted {len(macros)} LaTeX macros for {arxiv_id}")
+                except Exception as e:
+                    print(f"[JobQueue] LaTeX macro extraction failed (non-fatal): {e}")
+
             # Try primary parser, fallback to docling if fails
             parsers_to_try = [selected_parser]
             if selected_parser != "docling":

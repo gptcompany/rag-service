@@ -92,3 +92,44 @@ def test_ip_rate_limiter_blocks_after_threshold():
     allowed, retry_after = limiter.allow("127.0.0.1")
     assert allowed is False
     assert retry_after > 0
+
+
+def test_extract_api_key_from_headers_supports_bearer_and_x_api_key():
+    assert svc._extract_api_key({"X-API-Key": "abc123"}) == "abc123"
+    assert svc._extract_api_key({"Authorization": "Bearer token-1"}) == "token-1"
+    assert svc._extract_api_key({}) is None
+
+
+def test_sanitize_webhook_url_blocks_localhost_by_default(monkeypatch):
+    monkeypatch.setattr(svc, "ALLOW_PRIVATE_WEBHOOK_HOSTS", False)
+    monkeypatch.setattr(svc, "ALLOWED_WEBHOOK_HOSTS", ())
+
+    with pytest.raises(PermissionError, match="not allowed"):
+        svc.sanitize_webhook_url("http://localhost:5678/callback")
+
+
+def test_sanitize_webhook_url_allows_allowlisted_internal_host(monkeypatch):
+    monkeypatch.setattr(svc, "ALLOW_PRIVATE_WEBHOOK_HOSTS", False)
+    monkeypatch.setattr(svc, "ALLOWED_WEBHOOK_HOSTS", ("host.docker.internal", ".trusted.internal"))
+
+    assert (
+        svc.sanitize_webhook_url("http://host.docker.internal:5678/webhook")
+        == "http://host.docker.internal:5678/webhook"
+    )
+
+
+def test_sanitize_webhook_url_rejects_private_resolved_ip(monkeypatch):
+    monkeypatch.setattr(svc, "ALLOW_PRIVATE_WEBHOOK_HOSTS", False)
+    monkeypatch.setattr(svc, "ALLOWED_WEBHOOK_HOSTS", ())
+    monkeypatch.setattr(svc, "_resolve_webhook_ips", lambda host, port: {"10.0.0.4"})
+
+    with pytest.raises(PermissionError, match="not allowed"):
+        svc.sanitize_webhook_url("https://example.com/callback")
+
+
+def test_sanitize_webhook_url_allows_public_resolved_ip(monkeypatch):
+    monkeypatch.setattr(svc, "ALLOW_PRIVATE_WEBHOOK_HOSTS", False)
+    monkeypatch.setattr(svc, "ALLOWED_WEBHOOK_HOSTS", ())
+    monkeypatch.setattr(svc, "_resolve_webhook_ips", lambda host, port: {"93.184.216.34"})
+
+    assert svc.sanitize_webhook_url("https://example.com/callback") == "https://example.com/callback"

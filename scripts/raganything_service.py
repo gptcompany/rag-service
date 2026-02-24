@@ -20,9 +20,12 @@ import threading
 import time
 import uuid
 import hashlib
+import socket
+import ipaddress
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
+from urllib.parse import urlsplit
 
 from collections import deque, defaultdict
 from datetime import datetime, timedelta
@@ -82,6 +85,12 @@ MAX_REQUEST_BODY_BYTES = int(os.getenv("RAG_MAX_REQUEST_BODY_BYTES", "1048576"))
 RATE_LIMIT_WINDOW_SEC = int(os.getenv("RAG_RATE_LIMIT_WINDOW_SEC", "60"))
 RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RAG_RATE_LIMIT_MAX_REQUESTS", "120"))
 TRUST_PROXY_HEADERS = os.getenv("RAG_TRUST_PROXY_HEADERS", "false").lower() == "true"
+SERVICE_API_KEY = os.getenv("RAG_API_KEY", "").strip()
+_AUTH_EXEMPT_PATHS_RAW = os.getenv("RAG_AUTH_EXEMPT_PATHS", "/health,/status")
+AUTH_EXEMPT_PATHS = tuple(p.strip() for p in _AUTH_EXEMPT_PATHS_RAW.split(",") if p.strip())
+ALLOW_PRIVATE_WEBHOOK_HOSTS = os.getenv("RAG_ALLOW_PRIVATE_WEBHOOK_HOSTS", "false").lower() == "true"
+_ALLOWED_WEBHOOK_HOSTS_RAW = os.getenv("RAG_ALLOWED_WEBHOOK_HOSTS", "")
+ALLOWED_WEBHOOK_HOSTS = tuple(h.strip().lower() for h in _ALLOWED_WEBHOOK_HOSTS_RAW.split(",") if h.strip())
 
 # PDF hash deduplication storage
 PDF_HASH_DB = os.path.join(RAG_STORAGE, "processed_pdfs.json")
@@ -149,6 +158,113 @@ def translate_container_to_host_path(pdf_path: str) -> str:
         return mapped_path.replace(_CONTAINER_PATH_PREFIX, _HOST_PATH_PREFIX, 1)
 
     return mapped_path
+
+
+def _extract_api_key(headers) -> Optional[str]:
+    """Extract API key from X-API-Key or Authorization: Bearer."""
+    api_key = headers.get("X-API-Key", "").strip()
+    if api_key:
+        return api_key
+
+    auth_header = headers.get("Authorization", "").strip()
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+        if token:
+            return token
+
+    return None
+
+
+def _host_allowed_by_pattern(hostname: str, allowed_patterns: tuple[str, ...]) -> bool:
+    host = hostname.lower()
+    for pattern in allowed_patterns:
+        if pattern.startswith("."):
+            if host.endswith(pattern):
+                return True
+        elif host == pattern:
+            return True
+    return False
+
+
+def _is_public_ip(ip_text: str) -> bool:
+    """Return True if IP is globally routable."""
+    try:
+        return ipaddress.ip_address(ip_text).is_global
+    except ValueError:
+        return False
+
+
+def _resolve_webhook_ips(hostname: str, port: int) -> set[str]:
+    """Resolve hostname to IP strings for SSRF checks."""
+    resolved_ips: set[str] = set()
+    for family, _, _, _, sockaddr in socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM):
+        if family == socket.AF_INET:
+            resolved_ips.add(sockaddr[0])
+        elif family == socket.AF_INET6:
+            resolved_ips.add(sockaddr[0])
+    return resolved_ips
+
+
+def sanitize_webhook_url(webhook_url: Optional[str]) -> Optional[str]:
+    """Validate callback URL and apply SSRF protections."""
+    if webhook_url is None:
+        return None
+    if not isinstance(webhook_url, str):
+        raise ValueError("webhook_url must be a string")
+
+    raw_url = webhook_url.strip()
+    if not raw_url:
+        return None
+    if len(raw_url) > 2048:
+        raise ValueError("webhook_url is too long")
+
+    parsed = urlsplit(raw_url)
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError("webhook_url must use http or https")
+    if parsed.username or parsed.password:
+        raise ValueError("webhook_url must not include credentials")
+    if not parsed.netloc or not parsed.hostname:
+        raise ValueError("webhook_url is invalid")
+
+    hostname = parsed.hostname.lower()
+    try:
+        port = parsed.port or (443 if scheme == "https" else 80)
+    except ValueError as exc:
+        raise ValueError("webhook_url has invalid port") from exc
+
+    if _host_allowed_by_pattern(hostname, ALLOWED_WEBHOOK_HOSTS):
+        return raw_url
+
+    if ALLOW_PRIVATE_WEBHOOK_HOSTS:
+        return raw_url
+
+    if hostname in {"localhost"} or hostname.endswith(".localhost") or hostname.endswith(".local") or hostname.endswith(".internal"):
+        raise PermissionError("webhook_url host is not allowed")
+
+    # Literal IP (v4/v6)
+    try:
+        ip_obj = ipaddress.ip_address(hostname)
+    except ValueError:
+        ip_obj = None
+
+    if ip_obj is not None:
+        if not ip_obj.is_global:
+            raise PermissionError("webhook_url host is not allowed")
+        return raw_url
+
+    try:
+        resolved_ips = _resolve_webhook_ips(hostname, port)
+    except socket.gaierror as exc:
+        raise ValueError("webhook_url host could not be resolved") from exc
+
+    if not resolved_ips:
+        raise ValueError("webhook_url host could not be resolved")
+
+    if any(not _is_public_ip(ip) for ip in resolved_ips):
+        raise PermissionError("webhook_url host is not allowed")
+
+    return raw_url
 
 
 def sanitize_pdf_path(pdf_path: str) -> str:
@@ -691,6 +807,10 @@ class AsyncJobQueue:
             return
 
         try:
+            webhook_url = sanitize_webhook_url(job.webhook_url)
+            if not webhook_url:
+                return
+
             payload = {
                 "job_id": job.job_id,
                 "paper_id": job.paper_id,
@@ -700,12 +820,12 @@ class AsyncJobQueue:
             }
 
             response = requests.post(
-                job.webhook_url,
+                webhook_url,
                 json=payload,
                 timeout=30,
                 headers={"Content-Type": "application/json"},
             )
-            print(f"[Webhook] Called {job.webhook_url}: {response.status_code}")
+            print(f"[Webhook] Called {webhook_url}: {response.status_code}")
         except Exception as e:
             print(f"[Webhook] Failed to call {job.webhook_url}: {e}")
 
@@ -947,6 +1067,24 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
         traceback.print_exc()
         self.send_json(500, {"success": False, "error": "Internal server error"})
 
+    def _path_without_query(self) -> str:
+        return self.path.split("?", 1)[0]
+
+    def _requires_auth(self, path: str) -> bool:
+        return bool(SERVICE_API_KEY) and path not in AUTH_EXEMPT_PATHS
+
+    def _enforce_auth(self) -> bool:
+        path = self._path_without_query()
+        if not self._requires_auth(path):
+            return True
+
+        provided_key = _extract_api_key(self.headers)
+        if provided_key and provided_key == SERVICE_API_KEY:
+            return True
+
+        self.send_json(401, {"success": False, "error": "Unauthorized"})
+        return False
+
     def _get_client_ip(self) -> str:
         """Return client IP; proxy headers are opt-in."""
         if TRUST_PROXY_HEADERS:
@@ -960,7 +1098,8 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
         return path not in ("/health", "/status")
 
     def _enforce_rate_limit(self) -> bool:
-        if not self._should_rate_limit(self.path):
+        path = self._path_without_query()
+        if not self._should_rate_limit(path):
             return True
 
         client_ip = self._get_client_ip()
@@ -1003,6 +1142,8 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
         """Handle POST requests."""
         if not self._enforce_rate_limit():
             return
+        if not self._enforce_auth():
+            return
 
         if self.path == "/process":
             self.handle_process()
@@ -1043,7 +1184,7 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
             data = self.read_json_body()
             pdf_path = data.get("pdf_path", "")
             paper_id = data.get("paper_id", "")
-            webhook_url = data.get("webhook_url")  # Optional callback URL
+            webhook_url = sanitize_webhook_url(data.get("webhook_url"))  # Optional callback URL
             force_parser = data.get("force_parser")  # Optional: force specific parser (mineru/docling)
 
             if not pdf_path or not paper_id:
@@ -1209,6 +1350,8 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         """Handle GET requests."""
         if not self._enforce_rate_limit():
+            return
+        if not self._enforce_auth():
             return
 
         if self.path == "/health":

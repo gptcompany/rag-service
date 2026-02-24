@@ -89,6 +89,11 @@ MAX_REQUEST_BODY_BYTES = int(os.getenv("RAG_MAX_REQUEST_BODY_BYTES", "1048576"))
 RATE_LIMIT_WINDOW_SEC = int(os.getenv("RAG_RATE_LIMIT_WINDOW_SEC", "60"))
 RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RAG_RATE_LIMIT_MAX_REQUESTS", "120"))
 TRUST_PROXY_HEADERS = os.getenv("RAG_TRUST_PROXY_HEADERS", "false").lower() == "true"
+try:
+    TRUSTED_PROXY_HOPS = max(1, int(os.getenv("RAG_TRUSTED_PROXY_HOPS", "1")))
+except ValueError:
+    TRUSTED_PROXY_HOPS = 1
+    print("[Config] WARNING: Invalid RAG_TRUSTED_PROXY_HOPS; using 1")
 SERVICE_API_KEY = os.getenv("RAG_API_KEY", "").strip()
 _AUTH_EXEMPT_PATHS_RAW = os.getenv("RAG_AUTH_EXEMPT_PATHS", "/health,/status")
 AUTH_EXEMPT_PATHS = tuple(p.strip() for p in _AUTH_EXEMPT_PATHS_RAW.split(",") if p.strip())
@@ -189,12 +194,19 @@ def _extract_api_key(headers) -> Optional[str]:
     return None
 
 
-def _extract_client_ip_from_xff(x_forwarded_for: str) -> Optional[str]:
-    """Extract client IP from X-Forwarded-For assuming trusted proxies append entries."""
+def _extract_client_ip_from_xff(x_forwarded_for: str, trusted_hops: int = 1) -> Optional[str]:
+    """Extract the client/peer IP from XFF using trusted-proxy hop count.
+
+    We assume trusted proxies append entries to the right. The selected IP is the
+    Nth address from the right, where N = trusted_hops.
+    """
     parts = [part.strip() for part in x_forwarded_for.split(",") if part.strip()]
     if not parts:
         return None
-    return parts[-1]
+    hops = max(1, trusted_hops)
+    if len(parts) < hops:
+        return parts[0]
+    return parts[-hops]
 
 
 def _host_allowed_by_pattern(hostname: str, allowed_patterns: tuple[str, ...]) -> bool:
@@ -1177,7 +1189,7 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
         if TRUST_PROXY_HEADERS:
             forwarded_for = self.headers.get("X-Forwarded-For", "")
             if forwarded_for:
-                forwarded_ip = _extract_client_ip_from_xff(forwarded_for)
+                forwarded_ip = _extract_client_ip_from_xff(forwarded_for, TRUSTED_PROXY_HOPS)
                 if forwarded_ip:
                     return forwarded_ip
         return self.client_address[0] if self.client_address else "unknown"

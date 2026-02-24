@@ -117,10 +117,21 @@ def test_extract_api_key_from_headers_supports_bearer_and_x_api_key():
     assert svc._extract_api_key({}) is None
 
 
-def test_extract_client_ip_from_xff_returns_last_non_empty_entry():
+def test_extract_client_ip_from_xff_returns_last_non_empty_entry_by_default():
     assert svc._extract_client_ip_from_xff("1.1.1.1, 2.2.2.2") == "2.2.2.2"
     assert svc._extract_client_ip_from_xff(" 1.1.1.1 ,, 3.3.3.3 ") == "3.3.3.3"
     assert svc._extract_client_ip_from_xff("   ") is None
+
+
+def test_extract_client_ip_from_xff_supports_trusted_proxy_hops():
+    xff = "198.51.100.10, 203.0.113.7, 10.0.0.8"
+    assert svc._extract_client_ip_from_xff(xff, trusted_hops=1) == "10.0.0.8"
+    assert svc._extract_client_ip_from_xff(xff, trusted_hops=2) == "203.0.113.7"
+    assert svc._extract_client_ip_from_xff(xff, trusted_hops=3) == "198.51.100.10"
+
+
+def test_extract_client_ip_from_xff_falls_back_to_first_when_hops_exceed_entries():
+    assert svc._extract_client_ip_from_xff("198.51.100.10, 10.0.0.8", trusted_hops=5) == "198.51.100.10"
 
 
 def test_sanitize_webhook_url_blocks_localhost_by_default(monkeypatch):

@@ -170,7 +170,8 @@ Simple per-IP sliding-window limiter (all endpoints except `/health` and `/statu
 
 If behind a trusted reverse proxy:
 
-- `RAG_TRUST_PROXY_HEADERS=true` to honor `X-Forwarded-For` (expects trusted proxies to append entries)
+- `RAG_TRUST_PROXY_HEADERS=true` to honor `X-Forwarded-For`
+- `RAG_TRUSTED_PROXY_HOPS=1` (default) to select the Nth address from the right in `X-Forwarded-For`
 
 ## Configuration (Environment Variables)
 
@@ -219,6 +220,7 @@ If behind a trusted reverse proxy:
 | `RAG_RATE_LIMIT_MAX_REQUESTS` | `120` | Per-IP request count |
 | `RAG_RATE_LIMIT_WINDOW_SEC` | `60` | Rate-limit window (seconds) |
 | `RAG_TRUST_PROXY_HEADERS` | `false` | Trust `X-Forwarded-For` |
+| `RAG_TRUSTED_PROXY_HOPS` | `1` | Trusted proxy hops for XFF parsing (Nth from right) |
 | `RAG_ALLOW_PRIVATE_WEBHOOK_HOSTS` | `false` | Allow internal/private webhook targets |
 | `RAG_ALLOWED_WEBHOOK_HOSTS` | unset | CSV hostname allowlist (`host`, `.suffix`) |
 

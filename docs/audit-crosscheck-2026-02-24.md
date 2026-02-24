@@ -79,6 +79,7 @@ Relevant env vars introduced/used for hardening:
 - `RAG_RATE_LIMIT_MAX_REQUESTS`
 - `RAG_RATE_LIMIT_WINDOW_SEC`
 - `RAG_TRUST_PROXY_HEADERS`
+- `RAG_TRUSTED_PROXY_HOPS`
 - `RAG_ALLOW_PRIVATE_WEBHOOK_HOSTS`
 - `RAG_ALLOWED_WEBHOOK_HOSTS`
 
@@ -88,5 +89,5 @@ See `scripts/RAGANYTHING_SERVICE_README.md` for examples and operational guidanc
 
 - If using internal webhook callbacks (N8N, Docker bridge, internal DNS), explicitly allow the host via `RAG_ALLOWED_WEBHOOK_HOSTS`.
 - If running behind a reverse proxy, set `RAG_TRUST_PROXY_HEADERS=true` only when the proxy is trusted and strips spoofed headers.
-- `RAG_TRUST_PROXY_HEADERS` handling assumes trusted proxies append `X-Forwarded-For` entries; adjust if your proxy topology differs.
+- `RAG_TRUST_PROXY_HEADERS` handling assumes trusted proxies append `X-Forwarded-For` entries; use `RAG_TRUSTED_PROXY_HOPS` to match your proxy hop count.
 - The in-process rate limiter is intentionally simple; for stronger controls use a reverse proxy (nginx/traefik) or API gateway.

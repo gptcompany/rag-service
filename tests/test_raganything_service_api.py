@@ -24,6 +24,9 @@ class _AllowAllRateLimiter:
 class _StubCircuitBreaker:
     recovery_timeout = 300
 
+    def __init__(self):
+        self.reset_calls = 0
+
     def can_proceed(self) -> bool:
         return True
 
@@ -31,6 +34,7 @@ class _StubCircuitBreaker:
         return {"state": "closed", "recent_failures": 0}
 
     def reset(self):
+        self.reset_calls += 1
         return None
 
 
@@ -300,3 +304,32 @@ def test_job_detail_endpoint_falls_back_to_history(rag_api_server):
     assert status == 200
     assert data["job_id"] == "hist0001"
     assert data["status"] == "completed"
+
+
+def test_reset_circuit_breaker_requires_api_key(rag_api_server):
+    status, data = _http_json_request(
+        rag_api_server["port"],
+        "GET",
+        "/reset-circuit-breaker",
+    )
+
+    assert status == 401
+    assert data["success"] is False
+    assert data["error"] == "Unauthorized"
+
+
+def test_reset_circuit_breaker_resets_when_authorized(rag_api_server):
+    breaker = svc.circuit_breaker
+    assert breaker.reset_calls == 0
+
+    status, data = _http_json_request(
+        rag_api_server["port"],
+        "GET",
+        "/reset-circuit-breaker",
+        headers={"X-API-Key": "test-api-key"},
+    )
+
+    assert status == 200
+    assert data["success"] is True
+    assert "reset" in data["message"].lower()
+    assert breaker.reset_calls == 1

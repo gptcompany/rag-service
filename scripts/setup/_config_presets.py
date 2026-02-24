@@ -52,10 +52,17 @@ def set_env(key: str, value: str) -> bool:
         result = subprocess.run(
             ["dotenvx", "set", key, value, "-f", ENV_FILE],
             capture_output=True,
+            text=True,
             timeout=10,
         )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            if stderr:
+                print(f"[Config] dotenvx set {key} failed: {stderr}")
+            return False
+        return True
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        print(f"[Config] dotenvx set {key} failed: {exc}")
         return False
 
 

@@ -400,3 +400,56 @@ def test_reset_circuit_breaker_resets_when_authorized(rag_api_server):
     assert data["success"] is True
     assert "reset" in data["message"].lower()
     assert breaker.reset_calls == 1
+
+
+def test_rate_limiter_returns_429_when_exceeded(rag_api_server, monkeypatch):
+    class _BlockAllRateLimiter:
+        def allow(self, _client_ip: str) -> tuple[bool, int]:
+            return False, 42
+
+    monkeypatch.setattr(svc, "ip_rate_limiter", _BlockAllRateLimiter())
+
+    status, data = _http_json_request(
+        rag_api_server["port"],
+        "POST",
+        "/query",
+        payload={"query": "test", "mode": "hybrid"},
+        headers={"X-API-Key": "test-api-key"},
+    )
+
+    assert status == 429
+    assert data["success"] is False
+    assert "rate limit" in data["error"].lower()
+    assert data["retry_after"] == 42
+
+
+def test_circuit_breaker_returns_503_when_open(rag_api_server, monkeypatch):
+    class _OpenCircuitBreaker:
+        recovery_timeout = 120
+
+        def can_proceed(self) -> bool:
+            return False
+
+        def get_status(self) -> dict:
+            return {"state": "open", "recent_failures": 5}
+
+        def reset(self):
+            pass
+
+    monkeypatch.setattr(svc, "circuit_breaker", _OpenCircuitBreaker())
+
+    pdf = rag_api_server["pdf_root"] / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+
+    status, data = _http_json_request(
+        rag_api_server["port"],
+        "POST",
+        "/process",
+        payload={"pdf_path": str(pdf), "paper_id": "arxiv:2401.00001"},
+        headers={"X-API-Key": "test-api-key"},
+    )
+
+    assert status == 503
+    assert data["success"] is False
+    assert "circuit breaker" in data["error"].lower()
+    assert data["retry_after"] == 120

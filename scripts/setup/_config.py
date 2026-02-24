@@ -117,7 +117,18 @@ class ConfigStep:
             "port",
             "host",
         )
-        return all(get_env(ENV_VARS[key]) is not None for key in required_keys)
+        for key in required_keys:
+            val = get_env(ENV_VARS[key])
+            if val is None:
+                return False
+        # Validate numeric fields are actually valid numbers
+        port = get_env(ENV_VARS["port"])
+        if _parse_positive_int(port or "", min_value=1, max_value=65535) is None:
+            return False
+        dim = get_env(ENV_VARS["embedding_dim"])
+        if _parse_positive_int(dim or "", min_value=1) is None:
+            return False
+        return True
 
     def install(self, console: Console) -> bool:
         config: dict[str, str] = {}

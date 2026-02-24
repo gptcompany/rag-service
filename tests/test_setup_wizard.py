@@ -427,8 +427,19 @@ class TestConfigStep:
         from scripts.setup._config import ConfigStep
         return ConfigStep()
 
-    @patch("scripts.setup._config.get_env", return_value="gpt-4o-mini")
-    def test_check_passes_when_configured(self, _):
+    @patch("scripts.setup._config.get_env")
+    def test_check_passes_when_configured(self, mock_get):
+        from scripts.setup._config_presets import ENV_VARS
+        values = {
+            ENV_VARS["openai_model"]: "gpt-4o-mini",
+            ENV_VARS["ollama_model"]: "qwen3:8b",
+            ENV_VARS["embedding_model"]: "BAAI/bge-large-en-v1.5",
+            ENV_VARS["embedding_dim"]: "1024",
+            ENV_VARS["default_parser"]: "mineru",
+            ENV_VARS["port"]: "8767",
+            ENV_VARS["host"]: "0.0.0.0",
+        }
+        mock_get.side_effect = lambda key: values.get(key, "default")
         step = self._make_step()
         assert step.check() is True
 
@@ -445,6 +456,38 @@ class TestConfigStep:
             ENV_VARS["ollama_model"]: "qwen3:8b",
             ENV_VARS["embedding_model"]: "BAAI/bge-large-en-v1.5",
             # Missing embedding_dim
+            ENV_VARS["default_parser"]: "mineru",
+            ENV_VARS["port"]: "8767",
+            ENV_VARS["host"]: "0.0.0.0",
+        }
+        mock_get.side_effect = lambda key: values.get(key)
+        step = self._make_step()
+        assert step.check() is False
+
+    @patch("scripts.setup._config.get_env")
+    def test_check_fails_when_port_is_invalid(self, mock_get):
+        from scripts.setup._config_presets import ENV_VARS
+        values = {
+            ENV_VARS["openai_model"]: "gpt-4o-mini",
+            ENV_VARS["ollama_model"]: "qwen3:8b",
+            ENV_VARS["embedding_model"]: "BAAI/bge-large-en-v1.5",
+            ENV_VARS["embedding_dim"]: "1024",
+            ENV_VARS["default_parser"]: "mineru",
+            ENV_VARS["port"]: "banana",
+            ENV_VARS["host"]: "0.0.0.0",
+        }
+        mock_get.side_effect = lambda key: values.get(key)
+        step = self._make_step()
+        assert step.check() is False
+
+    @patch("scripts.setup._config.get_env")
+    def test_check_fails_when_embedding_dim_is_zero(self, mock_get):
+        from scripts.setup._config_presets import ENV_VARS
+        values = {
+            ENV_VARS["openai_model"]: "gpt-4o-mini",
+            ENV_VARS["ollama_model"]: "qwen3:8b",
+            ENV_VARS["embedding_model"]: "BAAI/bge-large-en-v1.5",
+            ENV_VARS["embedding_dim"]: "0",
             ENV_VARS["default_parser"]: "mineru",
             ENV_VARS["port"]: "8767",
             ENV_VARS["host"]: "0.0.0.0",

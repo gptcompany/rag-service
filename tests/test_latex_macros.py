@@ -87,6 +87,27 @@ class TestExtractMacros:
         assert "\\Dom" in macros
         assert macros["\\Dom"]["body"] == "\\operatorname{Dom}"
 
+    def test_def_no_args(self):
+        tex = r"""
+\def\aut{ \mathsf {Aut_\CC}(\Hf)}
+\def\modd{\, \mathsf{mod} \,}
+\begin{document}\end{document}
+"""
+        macros = extract_macros_from_tex(tex)
+        assert "\\aut" in macros
+        assert macros["\\aut"]["nargs"] == 0
+        assert "\\modd" in macros
+
+    def test_def_with_args(self):
+        tex = r"""
+\def\foo#1#2{#1 + #2}
+\begin{document}\end{document}
+"""
+        macros = extract_macros_from_tex(tex)
+        assert "\\foo" in macros
+        assert macros["\\foo"]["nargs"] == 2
+        assert macros["\\foo"]["body"] == "#1 + #2"
+
     def test_only_preamble(self):
         """Macros after \\begin{document} should be ignored."""
         tex = r"""

@@ -2,13 +2,22 @@
 from __future__ import annotations
 
 import json
+import os
 import urllib.request
 import urllib.error
 
 from rich.console import Console
 from rich.table import Table
 
-SERVICE_URL = "http://localhost:8767"
+
+def _get_port() -> str:
+    from ._config_presets import get_env, ENV_VARS
+    return get_env(ENV_VARS["port"]) or os.getenv("RAG_PORT", "8767")
+
+
+def _get_deploy_mode() -> str:
+    from ._config_presets import get_env, ENV_VARS
+    return get_env(ENV_VARS["deploy_mode"]) or "host"
 
 
 class VerifyStep:
@@ -19,14 +28,20 @@ class VerifyStep:
         return False
 
     def _fetch_json(self, path: str) -> dict | None:
+        port = _get_port()
         try:
-            req = urllib.request.Request(f"{SERVICE_URL}{path}", method="GET")
+            req = urllib.request.Request(
+                f"http://localhost:{port}{path}", method="GET"
+            )
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return json.loads(resp.read().decode())
         except (urllib.error.URLError, OSError, json.JSONDecodeError):
             return None
 
     def install(self, console: Console) -> bool:
+        port = _get_port()
+        deploy_mode = _get_deploy_mode()
+
         console.print("  Running full service verification...\n")
 
         # Health check
@@ -42,10 +57,15 @@ class VerifyStep:
             table.add_row(
                 "Service",
                 "[red]DOWN[/]",
-                "Cannot reach localhost:8767",
+                f"Cannot reach localhost:{port}",
             )
             console.print(table)
-            console.print("\n  [yellow]Start the service first, then re-run verify.[/]")
+            if deploy_mode == "docker":
+                console.print("\n  [yellow]Run: docker compose up -d[/]")
+            else:
+                console.print(
+                    "\n  [yellow]Start the service first, then re-run verify.[/]"
+                )
             return True  # Informational -- don't block
 
         # Parse health response
@@ -54,7 +74,7 @@ class VerifyStep:
         table.add_row(
             "Health",
             f"[{color}]{h_status.upper()}[/]",
-            f"port 8767",
+            f"port {port}",
         )
 
         if status_data:
@@ -81,7 +101,9 @@ class VerifyStep:
             )
 
             # LLM backend
-            llm = status_data.get("llm_backend", status_data.get("llm", "unknown"))
+            llm = status_data.get(
+                "llm_backend", status_data.get("llm", "unknown")
+            )
             table.add_row("LLM Backend", "[cyan]INFO[/]", str(llm))
 
             # Parser

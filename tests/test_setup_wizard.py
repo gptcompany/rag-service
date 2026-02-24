@@ -261,6 +261,7 @@ class TestRunner:
         step.name = "Failing"
         step.check.return_value = False
         step.install.return_value = False
+        step.skip_when = None  # Not a skippable step
 
         mock_confirm.return_value.ask.return_value = True
         mock_select.return_value.ask.return_value = "Abort"
@@ -321,3 +322,227 @@ class TestMain:
         from scripts.setup.main import main
         result = main([])
         assert result == 1
+
+    @patch("scripts.setup.main.run_steps", return_value=True)
+    def test_config_subcommand(self, mock_run):
+        from scripts.setup.main import main
+        result = main(["config"])
+        assert result == 0
+
+    @patch("scripts.setup.main.run_steps", return_value=True)
+    def test_deploy_subcommand(self, mock_run):
+        from scripts.setup.main import main
+        result = main(["deploy"])
+        assert result == 0
+
+
+# ── DeployStep ──────────────────────────────────────────────
+
+class TestDeployStep:
+    def _make_step(self):
+        from scripts.setup._deploy import DeployStep
+        return DeployStep()
+
+    @patch("scripts.setup._config_presets.subprocess.run")
+    def test_check_passes_when_mode_set(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="host\n")
+        step = self._make_step()
+        assert step.check() is True
+
+    @patch("scripts.setup._config_presets.subprocess.run")
+    def test_check_fails_when_mode_missing(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        step = self._make_step()
+        assert step.check() is False
+
+    @patch("scripts.setup._deploy.set_env", return_value=True)
+    @patch("questionary.select")
+    def test_install_host_mode(self, mock_select, mock_set):
+        step = self._make_step()
+        console = MagicMock()
+        mock_select.return_value.ask.return_value = "host"
+        result = step.install(console)
+        assert result is True
+        # Should persist deploy_mode=host and ollama_mode=external
+        assert mock_set.call_count == 2
+
+    @patch("scripts.setup._deploy.set_env", return_value=True)
+    @patch("questionary.select")
+    def test_install_docker_sidecar(self, mock_select, mock_set):
+        step = self._make_step()
+        console = MagicMock()
+        mock_select.return_value.ask.side_effect = ["docker", "sidecar"]
+        result = step.install(console)
+        assert result is True
+
+    @patch("questionary.select")
+    def test_install_cancelled(self, mock_select):
+        step = self._make_step()
+        console = MagicMock()
+        mock_select.return_value.ask.return_value = None
+        result = step.install(console)
+        assert result is False
+
+    def test_verify_delegates_to_check(self):
+        step = self._make_step()
+        with patch.object(step, "check", return_value=True):
+            assert step.verify() is True
+
+
+# ── ConfigStep ──────────────────────────────────────────────
+
+class TestConfigStep:
+    def _make_step(self):
+        from scripts.setup._config import ConfigStep
+        return ConfigStep()
+
+    @patch("scripts.setup._config.get_env", return_value="gpt-4o-mini")
+    def test_check_passes_when_configured(self, _):
+        step = self._make_step()
+        assert step.check() is True
+
+    @patch("scripts.setup._config.get_env", return_value=None)
+    def test_check_fails_when_not_configured(self, _):
+        step = self._make_step()
+        assert step.check() is False
+
+    def test_verify_delegates_to_check(self):
+        step = self._make_step()
+        with patch.object(step, "check", return_value=True):
+            assert step.verify() is True
+
+    @patch("scripts.setup._config.get_env", return_value=None)
+    @patch("scripts.setup._config.set_env", return_value=True)
+    @patch("scripts.setup._config.discover_ollama_models", return_value=[])
+    @patch("questionary.select")
+    @patch("questionary.text")
+    @patch("questionary.confirm")
+    def test_install_full_flow(
+        self, mock_confirm, mock_text, mock_select, mock_discover, mock_set, mock_get
+    ):
+        from scripts.setup._config_presets import EMBEDDING_PRESETS
+
+        step = self._make_step()
+        console = MagicMock()
+
+        # Simulate user choices: openai, ollama custom, embed preset, rerank, parser, port, vision, confirm
+        mock_select.return_value.ask.side_effect = [
+            "gpt-4o-mini",          # 1/6 OpenAI
+            EMBEDDING_PRESETS[0],   # 3/6 Embedding (preset)
+            "mineru",               # 5/6 Parser
+        ]
+        mock_text.return_value.ask.side_effect = [
+            "qwen3:8b",  # 2/6 Ollama (custom fallback)
+            "8767",       # 6/6 Port
+        ]
+        mock_confirm.return_value.ask.side_effect = [
+            True,   # 4/6 Reranker enable
+            False,  # 6/6 Vision disable
+            True,   # Apply config confirm
+        ]
+
+        result = step.install(console)
+        assert result is True
+        assert mock_set.call_count >= 8  # At least 8 env vars set
+
+
+# ── ConfigPresets ───────────────────────────────────────────
+
+class TestConfigPresets:
+    def test_env_vars_all_prefixed(self):
+        from scripts.setup._config_presets import ENV_VARS
+        for key, var_name in ENV_VARS.items():
+            assert var_name.startswith("RAG_"), f"{key} -> {var_name} missing RAG_ prefix"
+
+    def test_embedding_presets_valid(self):
+        from scripts.setup._config_presets import EMBEDDING_PRESETS
+        assert len(EMBEDDING_PRESETS) >= 4
+        for preset in EMBEDDING_PRESETS:
+            assert preset.dim > 0
+            assert preset.model.startswith("BAAI/")
+            assert len(preset.label) > 0
+
+    def test_openai_presets_has_custom(self):
+        from scripts.setup._config_presets import OPENAI_PRESETS
+        assert "Custom" in OPENAI_PRESETS
+        assert "gpt-4o-mini" in OPENAI_PRESETS
+
+    def test_parsers_valid(self):
+        from scripts.setup._config_presets import PARSERS
+        names = [name for name, _ in PARSERS]
+        assert "mineru" in names
+        assert "docling" in names
+        assert "paddleocr" in names
+
+    @patch("urllib.request.urlopen")
+    def test_discover_ollama_success(self, mock_urlopen):
+        import io
+        from scripts.setup._config_presets import discover_ollama_models
+        response_data = b'{"models":[{"name":"qwen3:8b"},{"name":"llama3:latest"}]}'
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = response_data
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+        models = discover_ollama_models("http://localhost:11434")
+        assert models == ["qwen3:8b", "llama3:latest"]
+
+    @patch("urllib.request.urlopen", side_effect=OSError("connection refused"))
+    def test_discover_ollama_failure(self, _):
+        from scripts.setup._config_presets import discover_ollama_models
+        models = discover_ollama_models("http://localhost:11434")
+        assert models == []
+
+
+# ── Runner skip_when ────────────────────────────────────────
+
+class TestRunnerSkipWhen:
+    @patch("questionary.confirm")
+    def test_step_with_skip_when_true_is_skipped(self, mock_confirm):
+        from scripts.setup._runner import run_steps
+
+        step = MagicMock()
+        step.name = "Skippable"
+        step.skip_when = MagicMock(return_value=True)
+
+        console = MagicMock()
+        console.status.return_value.__enter__ = MagicMock()
+        console.status.return_value.__exit__ = MagicMock()
+
+        result = run_steps([step], console)
+        assert result is True
+        step.check.assert_not_called()
+        step.install.assert_not_called()
+
+    @patch("questionary.confirm")
+    def test_step_without_skip_when_runs_normally(self, mock_confirm):
+        from scripts.setup._runner import run_steps
+
+        step = MagicMock(spec=["name", "check", "install", "verify"])
+        step.name = "Normal"
+        step.check.return_value = True
+
+        console = MagicMock()
+        console.status.return_value.__enter__ = MagicMock()
+        console.status.return_value.__exit__ = MagicMock()
+
+        result = run_steps([step], console)
+        assert result is True
+        step.check.assert_called_once()
+
+    @patch("questionary.confirm")
+    def test_step_with_skip_when_false_runs(self, mock_confirm):
+        from scripts.setup._runner import run_steps
+
+        step = MagicMock()
+        step.name = "NotSkipped"
+        step.skip_when = MagicMock(return_value=False)
+        step.check.return_value = True
+
+        console = MagicMock()
+        console.status.return_value.__enter__ = MagicMock()
+        console.status.return_value.__exit__ = MagicMock()
+
+        result = run_steps([step], console)
+        assert result is True
+        step.check.assert_called_once()

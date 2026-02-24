@@ -156,3 +156,37 @@ def test_sanitize_webhook_url_allows_public_resolved_ip(monkeypatch):
     url, ip = svc.sanitize_webhook_url("https://example.com/callback")
     assert url == "https://example.com/callback"
     assert ip == "93.184.216.34"
+
+
+def test_pinned_host_adapter_http_routes_to_pinned_ip():
+    """HTTP adapter routes connection_from_host to the pinned IP."""
+    adapter = svc.PinnedHostAdapter("1.2.3.4")
+    adapter.init_poolmanager(num_pools=1, maxsize=1, block=False)
+
+    pool = adapter.poolmanager.connection_from_host("example.com", 80, "http")
+    assert pool.host == "1.2.3.4"
+
+
+def test_pinned_host_adapter_https_preserves_sni_and_assert_hostname():
+    """HTTPS adapter pins IP but preserves hostname for cert/SNI validation."""
+    adapter = svc.PinnedHostAdapter("93.184.216.34", hostname="example.com")
+    adapter.init_poolmanager(num_pools=1, maxsize=1, block=False)
+
+    pool = adapter.poolmanager.connection_from_host("example.com", 443, "https")
+    # TCP goes to the pinned IP
+    assert pool.host == "93.184.216.34"
+    # TLS cert is validated against original hostname
+    assert pool.assert_hostname == "example.com"
+    # SNI sends original hostname
+    assert pool.conn_kw.get("server_hostname") == "example.com"
+
+
+def test_pinned_host_adapter_without_hostname_has_no_sni():
+    """Adapter without hostname should not set assert_hostname or server_hostname."""
+    adapter = svc.PinnedHostAdapter("1.2.3.4", hostname=None)
+    adapter.init_poolmanager(num_pools=1, maxsize=1, block=False)
+
+    pool = adapter.poolmanager.connection_from_host("example.com", 443, "https")
+    assert pool.host == "1.2.3.4"
+    assert pool.assert_hostname is None
+    assert "server_hostname" not in pool.conn_kw

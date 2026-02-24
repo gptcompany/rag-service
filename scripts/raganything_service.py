@@ -622,6 +622,39 @@ class IpRateLimiter:
             return True, 0
 
 
+class PinnedHostAdapter(HTTPAdapter):
+    """HTTPAdapter that pins connections to a pre-resolved IP.
+
+    For HTTPS, preserves SNI (server_hostname) and certificate hostname
+    validation (assert_hostname) so that TLS works correctly even though
+    the TCP connection targets the numeric IP.
+    """
+
+    def __init__(self, pinned_ip: str, hostname: str | None = None, **kwargs):
+        self.pinned_ip = pinned_ip
+        self.hostname = hostname
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, *args, **kwargs):
+        if self.hostname:
+            # assert_hostname → cert CN/SAN check uses original hostname
+            # server_hostname → SNI extension sends original hostname
+            kwargs["assert_hostname"] = self.hostname
+            kwargs["server_hostname"] = self.hostname
+        self.poolmanager = _PinnedPoolManager(self.pinned_ip, *args, **kwargs)
+
+
+class _PinnedPoolManager(PoolManager):
+    """PoolManager that routes all connections to a fixed IP."""
+
+    def __init__(self, pinned_ip: str, *args, **kwargs):
+        self.pinned_ip = pinned_ip
+        super().__init__(*args, **kwargs)
+
+    def connection_from_host(self, host, port=None, scheme="http", pool_kwargs=None):
+        return super().connection_from_host(self.pinned_ip, port, scheme, pool_kwargs)
+
+
 class AsyncJobQueue:
     """Async job queue with background processing."""
 
@@ -853,29 +886,10 @@ class AsyncJobQueue:
                 "error": job.error,
             }
 
-            class PinnedHostAdapter(HTTPAdapter):
-                def __init__(self, pinned_ip, **kwargs):
-                    self.pinned_ip = pinned_ip
-                    super().__init__(**kwargs)
-
-                def init_poolmanager(self, *args, **kwargs):
-                    class PinnedPoolManager(PoolManager):
-                        def __init__(self, pinned_ip, *args, **kwargs):
-                            self.pinned_ip = pinned_ip
-                            super().__init__(*args, **kwargs)
-
-                        def connection_from_host(self, host, port=None, scheme="http", pool_kwargs=None):
-                            # Force use of the pinned IP instead of resolving 'host'
-                            return super().connection_from_host(self.pinned_ip, port, scheme, pool_kwargs)
-
-                    self.poolmanager = PinnedPoolManager(self.pinned_ip, *args, **kwargs)
-
             parsed = urlsplit(job.webhook_url)
-            if job.resolved_webhook_ip and parsed.scheme == "http":
-                # Pin only plaintext HTTP callbacks. For HTTPS, pinning via pool host/IP
-                # can break certificate hostname validation unless SNI/assert_hostname
-                # are preserved explicitly.
-                adapter = PinnedHostAdapter(job.resolved_webhook_ip)
+            if job.resolved_webhook_ip:
+                hostname = parsed.hostname
+                adapter = PinnedHostAdapter(job.resolved_webhook_ip, hostname=hostname)
                 prefix = f"{parsed.scheme}://{parsed.netloc}"
                 session.mount(prefix, adapter)
 

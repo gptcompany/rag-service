@@ -13,6 +13,7 @@ Implemented:
 - Per-IP rate limiting (sliding window)
 - Optional API key auth for sensitive endpoints
 - Webhook URL SSRF guard (scheme/host validation + private target restrictions)
+- Webhook callback DNS pinning (HTTP + HTTPS with SNI-aware TLS)
 - Reduced internal error leakage to clients
 - Unit tests covering the new guards
 
@@ -55,7 +56,7 @@ Not yet implemented:
 - Missing integration tests for `/process` and `/query`: Confirmed
   - Status: Partially fixed (`tests/test_raganything_service_api.py` covers HTTP behavior with stubbed runtime)
 - Missing unit tests for runtime guards/queue/breaker: Confirmed
-  - Status: Partially fixed (`pdf_path`, rate limiter, webhook/auth helpers)
+  - Status: Partially fixed (`pdf_path`, rate limiter, webhook/auth helpers, webhook pinning adapter)
 
 ### 5. Code Smells & Maintainability
 
@@ -87,4 +88,5 @@ See `scripts/RAGANYTHING_SERVICE_README.md` for examples and operational guidanc
 
 - If using internal webhook callbacks (N8N, Docker bridge, internal DNS), explicitly allow the host via `RAG_ALLOWED_WEBHOOK_HOSTS`.
 - If running behind a reverse proxy, set `RAG_TRUST_PROXY_HEADERS=true` only when the proxy is trusted and strips spoofed headers.
+- `RAG_TRUST_PROXY_HEADERS` handling assumes trusted proxies append `X-Forwarded-For` entries; adjust if your proxy topology differs.
 - The in-process rate limiter is intentionally simple; for stronger controls use a reverse proxy (nginx/traefik) or API gateway.

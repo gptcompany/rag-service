@@ -630,13 +630,20 @@ class PinnedHostAdapter(HTTPAdapter):
     the TCP connection targets the numeric IP.
     """
 
-    def __init__(self, pinned_ip: str, hostname: str | None = None, **kwargs):
+    def __init__(
+        self,
+        pinned_ip: str,
+        hostname: str | None = None,
+        scheme: str | None = None,
+        **kwargs,
+    ):
         self.pinned_ip = pinned_ip
         self.hostname = hostname
+        self.scheme = (scheme or "").lower()
         super().__init__(**kwargs)
 
     def init_poolmanager(self, *args, **kwargs):
-        if self.hostname:
+        if self.hostname and self.scheme == "https":
             # assert_hostname → cert CN/SAN check uses original hostname
             # server_hostname → SNI extension sends original hostname
             kwargs["assert_hostname"] = self.hostname
@@ -889,7 +896,11 @@ class AsyncJobQueue:
             parsed = urlsplit(job.webhook_url)
             if job.resolved_webhook_ip:
                 hostname = parsed.hostname
-                adapter = PinnedHostAdapter(job.resolved_webhook_ip, hostname=hostname)
+                adapter = PinnedHostAdapter(
+                    job.resolved_webhook_ip,
+                    hostname=hostname,
+                    scheme=parsed.scheme,
+                )
                 prefix = f"{parsed.scheme}://{parsed.netloc}"
                 session.mount(prefix, adapter)
 

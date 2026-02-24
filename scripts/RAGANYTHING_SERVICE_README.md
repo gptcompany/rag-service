@@ -124,6 +124,7 @@ Allowed by default:
 - `http://` or `https://`
 - valid URL without embedded credentials
 - public/global hosts only
+- DNS-resolved target IP is validated before callback execution
 
 Rejected by default:
 
@@ -135,6 +136,12 @@ Overrides (use carefully):
 
 - `RAG_ALLOW_PRIVATE_WEBHOOK_HOSTS=true`
 - `RAG_ALLOWED_WEBHOOK_HOSTS=host.docker.internal,.trusted.internal`
+
+Callback delivery hardening:
+
+- HTTP callbacks use DNS pinning to the pre-validated IP
+- HTTPS callbacks use DNS pinning with SNI-aware TLS settings (certificate validation still checks original hostname)
+- Cached `/process` responses reuse the same webhook helper path (no callback security bypass)
 
 ## Authentication & Rate Limiting
 
@@ -163,7 +170,7 @@ Simple per-IP sliding-window limiter (all endpoints except `/health` and `/statu
 
 If behind a trusted reverse proxy:
 
-- `RAG_TRUST_PROXY_HEADERS=true` to honor `X-Forwarded-For`
+- `RAG_TRUST_PROXY_HEADERS=true` to honor `X-Forwarded-For` (expects trusted proxies to append entries)
 
 ## Configuration (Environment Variables)
 

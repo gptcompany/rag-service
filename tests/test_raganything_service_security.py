@@ -167,9 +167,21 @@ def test_pinned_host_adapter_http_routes_to_pinned_ip():
     assert pool.host == "1.2.3.4"
 
 
+def test_pinned_host_adapter_http_with_hostname_does_not_inject_tls_kwargs():
+    """HTTP pinning with hostname set should not break urllib3 HTTPConnection."""
+    adapter = svc.PinnedHostAdapter("1.2.3.4", hostname="example.com", scheme="http")
+    adapter.init_poolmanager(num_pools=1, maxsize=1, block=False)
+
+    pool = adapter.poolmanager.connection_from_host("example.com", 80, "http")
+    assert pool.host == "1.2.3.4"
+    # Regression check: this raised TypeError when assert_hostname leaked into HTTP conn_kw.
+    conn = pool._new_conn()
+    assert conn.host == "1.2.3.4"
+
+
 def test_pinned_host_adapter_https_preserves_sni_and_assert_hostname():
     """HTTPS adapter pins IP but preserves hostname for cert/SNI validation."""
-    adapter = svc.PinnedHostAdapter("93.184.216.34", hostname="example.com")
+    adapter = svc.PinnedHostAdapter("93.184.216.34", hostname="example.com", scheme="https")
     adapter.init_poolmanager(num_pools=1, maxsize=1, block=False)
 
     pool = adapter.poolmanager.connection_from_host("example.com", 443, "https")
@@ -183,7 +195,7 @@ def test_pinned_host_adapter_https_preserves_sni_and_assert_hostname():
 
 def test_pinned_host_adapter_without_hostname_has_no_sni():
     """Adapter without hostname should not set assert_hostname or server_hostname."""
-    adapter = svc.PinnedHostAdapter("1.2.3.4", hostname=None)
+    adapter = svc.PinnedHostAdapter("1.2.3.4", hostname=None, scheme="https")
     adapter.init_poolmanager(num_pools=1, maxsize=1, block=False)
 
     pool = adapter.poolmanager.connection_from_host("example.com", 443, "https")

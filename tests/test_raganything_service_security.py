@@ -117,6 +117,12 @@ def test_extract_api_key_from_headers_supports_bearer_and_x_api_key():
     assert svc._extract_api_key({}) is None
 
 
+def test_extract_client_ip_from_xff_returns_last_non_empty_entry():
+    assert svc._extract_client_ip_from_xff("1.1.1.1, 2.2.2.2") == "2.2.2.2"
+    assert svc._extract_client_ip_from_xff(" 1.1.1.1 ,, 3.3.3.3 ") == "3.3.3.3"
+    assert svc._extract_client_ip_from_xff("   ") is None
+
+
 def test_sanitize_webhook_url_blocks_localhost_by_default(monkeypatch):
     monkeypatch.setattr(svc, "ALLOW_PRIVATE_WEBHOOK_HOSTS", False)
     monkeypatch.setattr(svc, "ALLOWED_WEBHOOK_HOSTS", ())

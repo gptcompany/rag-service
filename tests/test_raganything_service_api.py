@@ -52,6 +52,7 @@ class _StubJobQueue:
     def __init__(self):
         self.submissions: list[_SubmittedJob] = []
         self.job_history = []
+        self.webhook_calls: list[object] = []
 
     def can_accept(self) -> bool:
         return True
@@ -90,6 +91,9 @@ class _StubJobQueue:
 
     def get_job(self, _job_id: str):
         return None
+
+    def _call_webhook(self, job):
+        self.webhook_calls.append(job)
 
 
 class _StubJobRecord:
@@ -239,6 +243,43 @@ def test_process_endpoint_rejects_invalid_parser(rag_api_server):
 
     assert status == 400
     assert "Invalid parser" in data["error"]
+
+
+def test_process_cached_result_uses_webhook_helper_with_pinned_ip(rag_api_server, monkeypatch):
+    monkeypatch.setattr(svc, "_resolve_webhook_ips", lambda host, port: {"93.184.216.34"})
+
+    paper_id = "arxiv:2401.12345"
+    safe_id = paper_id.replace("arxiv:", "").replace("/", "_").replace(":", "_")
+    cached_dir = rag_api_server["pdf_root"].parent / "output" / safe_id
+    cached_dir.mkdir(parents=True, exist_ok=True)
+    (cached_dir / "result.md").write_text("# cached")
+
+    # PDF path is ignored for cached flow but must be syntactically present.
+    pdf = rag_api_server["pdf_root"] / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+
+    status, data = _http_json_request(
+        rag_api_server["port"],
+        "POST",
+        "/process",
+        payload={
+            "pdf_path": str(pdf),
+            "paper_id": paper_id,
+            "webhook_url": "https://example.com/callback",
+        },
+        headers={"X-API-Key": "test-api-key"},
+    )
+
+    assert status == 200
+    assert data["success"] is True
+    assert data["cached"] is True
+    assert len(rag_api_server["job_queue"].webhook_calls) == 1
+
+    webhook_job = rag_api_server["job_queue"].webhook_calls[0]
+    assert webhook_job.job_id == "cached"
+    assert webhook_job.webhook_url == "https://example.com/callback"
+    assert webhook_job.resolved_webhook_ip == "93.184.216.34"
+    assert webhook_job.result["cached"] is True
 
 
 def test_query_endpoint_requires_api_key_when_enabled(rag_api_server):

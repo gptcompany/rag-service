@@ -182,6 +182,14 @@ def _extract_api_key(headers) -> Optional[str]:
     return None
 
 
+def _extract_client_ip_from_xff(x_forwarded_for: str) -> Optional[str]:
+    """Extract client IP from X-Forwarded-For assuming trusted proxies append entries."""
+    parts = [part.strip() for part in x_forwarded_for.split(",") if part.strip()]
+    if not parts:
+        return None
+    return parts[-1]
+
+
 def _host_allowed_by_pattern(hostname: str, allowed_patterns: tuple[str, ...]) -> bool:
     host = hostname.lower()
     for pattern in allowed_patterns:
@@ -1137,7 +1145,9 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
         if TRUST_PROXY_HEADERS:
             forwarded_for = self.headers.get("X-Forwarded-For", "")
             if forwarded_for:
-                return forwarded_for.split(",")[0].strip()
+                forwarded_ip = _extract_client_ip_from_xff(forwarded_for)
+                if forwarded_ip:
+                    return forwarded_ip
         return self.client_address[0] if self.client_address else "unknown"
 
     def _should_rate_limit(self, path: str) -> bool:
@@ -1270,24 +1280,23 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
                     # Call webhook with cached result if configured
                     if webhook_url:
                         try:
-                            # For cached results, we use a simple post for now as it's not a job
-                            # (Ideally would use the same pinning if we have the IP)
-                            requests.post(
-                                webhook_url,
-                                json={
-                                    "job_id": "cached",
-                                    "paper_id": paper_id,
-                                    "status": "completed",
-                                    "result": {
-                                        "success": True,
-                                        "cached": True,
-                                        "output_dir": output_dir_container,
-                                        "markdown_length": markdown_length,
-                                    },
-                                    "error": None,
-                                },
-                                timeout=30,
+                            cached_result = {
+                                "success": True,
+                                "cached": True,
+                                "output_dir": output_dir_container,
+                                "markdown_length": markdown_length,
+                            }
+                            cached_job = Job(
+                                job_id="cached",
+                                paper_id=paper_id,
+                                pdf_path=pdf_path,
+                                webhook_url=webhook_url,
+                                resolved_webhook_ip=resolved_webhook_ip,
                             )
+                            cached_job.status = JobStatus.COMPLETED
+                            cached_job.result = cached_result
+                            cached_job.error = None
+                            job_queue._call_webhook(cached_job)
                         except Exception as e:
                             print(f"[Webhook] Failed for cached result: {e}")
 

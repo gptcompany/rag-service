@@ -828,6 +828,7 @@ class AsyncJobQueue:
         if not job.webhook_url:
             return
 
+        session = requests.Session()
         try:
             payload = {
                 "job_id": job.job_id,
@@ -854,11 +855,12 @@ class AsyncJobQueue:
 
                     self.poolmanager = PinnedPoolManager(self.pinned_ip, *args, **kwargs)
 
-            session = requests.Session()
-            if job.resolved_webhook_ip:
-                # Pin the connection to the already-validated IP
+            parsed = urlsplit(job.webhook_url)
+            if job.resolved_webhook_ip and parsed.scheme == "http":
+                # Pin only plaintext HTTP callbacks. For HTTPS, pinning via pool host/IP
+                # can break certificate hostname validation unless SNI/assert_hostname
+                # are preserved explicitly.
                 adapter = PinnedHostAdapter(job.resolved_webhook_ip)
-                parsed = urlsplit(job.webhook_url)
                 prefix = f"{parsed.scheme}://{parsed.netloc}"
                 session.mount(prefix, adapter)
 
@@ -871,8 +873,8 @@ class AsyncJobQueue:
             print(f"[Webhook] Called {job.webhook_url} (IP: {job.resolved_webhook_ip or 'auto'}): {response.status_code}")
         except Exception as e:
             print(f"[Webhook] Failed to call {job.webhook_url}: {e}")
-        except Exception as e:
-            print(f"[Webhook] Failed to call {job.webhook_url}: {e}")
+        finally:
+            session.close()
 
     def get_status(self) -> dict:
         with self.lock:

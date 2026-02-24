@@ -35,8 +35,8 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "raganything"))
 
 # Configuration
-HOST = "0.0.0.0"
-PORT = 8767
+HOST = os.getenv("RAG_HOST", "0.0.0.0")
+PORT = int(os.getenv("RAG_PORT", "8767"))
 _SERVICE_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_BASE = os.getenv("RAG_OUTPUT_BASE", str(_SERVICE_ROOT / "data" / "extracted"))
 RAG_STORAGE = os.getenv("RAG_STORAGE_DIR", str(_SERVICE_ROOT / "data" / "rag_knowledge_base"))
@@ -50,12 +50,12 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 # Embedding model config (local)
-EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"  # Best local embedding for RAG
-EMBEDDING_DIM = 1024
+EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "BAAI/bge-large-en-v1.5")
+EMBEDDING_DIM = int(os.getenv("RAG_EMBEDDING_DIM", "1024"))
 
 # LLM config
-OPENAI_MODEL = "gpt-4o-mini"
-OLLAMA_MODEL = "qwen3:8b"
+OPENAI_MODEL = os.getenv("RAG_OPENAI_MODEL", "gpt-4o-mini")
+OLLAMA_MODEL = os.getenv("RAG_OLLAMA_MODEL", "qwen3:8b")
 
 # Vision processing (expensive - uses GPT-4o)
 # Set to False to skip image analysis and save API costs
@@ -63,11 +63,11 @@ ENABLE_VISION = os.getenv("RAG_ENABLE_VISION", "false").lower() == "true"
 
 # Rerank config (local model - free, improves query quality)
 ENABLE_RERANK = os.getenv("RAG_ENABLE_RERANK", "true").lower() == "true"
-RERANK_MODEL = "BAAI/bge-reranker-v2-m3"  # Best multilingual reranker
+RERANK_MODEL = os.getenv("RAG_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
 
 # Parser config (MinerU primary, docling fallback)
 PARSER_PAGE_THRESHOLD = int(os.getenv("RAG_PARSER_THRESHOLD", "15"))  # Pages
-DEFAULT_PARSER = "mineru"  # Default for documents that can't be measured
+DEFAULT_PARSER = os.getenv("RAG_DEFAULT_PARSER", "mineru")
 
 # Path mapping: host ↔ container translation (for Docker/container deployments)
 # Set RAG_HOST_PATH_PREFIX and RAG_CONTAINER_PATH_PREFIX to enable path translation.
@@ -737,16 +737,25 @@ def get_rag_instance():
                     print(f"[RAG] Loading reranker: {RERANK_MODEL}...")
                     reranker = FlagReranker(RERANK_MODEL, use_fp16=True)
 
-                    async def rerank_func(query: str, passages: list[str], top_k: int = 5):
-                        """Rerank passages using local model."""
-                        if not passages:
+                    async def rerank_func(query: str, documents: list[str], top_n: int = 5):
+                        """Rerank documents using local model.
+
+                        Returns index-based results as expected by LightRAG:
+                        [{"index": i, "relevance_score": score}, ...]
+                        """
+                        if not documents:
                             return []
-                        pairs = [[query, p] for p in passages]
+                        pairs = [[query, d] for d in documents]
                         scores = reranker.compute_score(pairs)
                         if isinstance(scores, float):
                             scores = [scores]
-                        ranked = sorted(zip(passages, scores), key=lambda x: x[1], reverse=True)
-                        return [p for p, s in ranked[:top_k]]
+                        indexed = sorted(
+                            enumerate(scores), key=lambda x: x[1], reverse=True
+                        )
+                        return [
+                            {"index": i, "relevance_score": s}
+                            for i, s in indexed[:top_n]
+                        ]
 
                     print(f"[RAG] Reranker ready: {RERANK_MODEL}")
                 except Exception as e:

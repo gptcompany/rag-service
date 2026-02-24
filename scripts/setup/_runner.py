@@ -18,6 +18,13 @@ class SetupStep(Protocol):
 def run_steps(steps: list[SetupStep], console: Console) -> bool:
     results: list[tuple[str, str]] = []
     for step in steps:
+        skip_fn = getattr(step, "skip_when", None)
+        if callable(skip_fn) and skip_fn():
+            console.print(
+                f"  [dim]\u23ed\ufe0f  {step.name}[/] \u2014 not needed for this deployment"
+            )
+            results.append((step.name, "skipped"))
+            continue
         with console.status(f"[bold cyan]Checking {step.name}...[/]"):
             if step.check():
                 console.print(

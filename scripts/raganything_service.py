@@ -110,6 +110,7 @@ def _build_allowed_pdf_roots() -> tuple[Path, ...]:
     if _ALLOWED_PDF_ROOTS_RAW.strip():
         configured_roots.extend(p.strip() for p in _ALLOWED_PDF_ROOTS_RAW.split(",") if p.strip())
     else:
+        # Default allowlist derived from other configs
         if _HOST_PATH_PREFIX:
             configured_roots.append(_HOST_PATH_PREFIX)
         for mapping in _PATH_MAPPINGS.split(","):
@@ -120,6 +121,8 @@ def _build_allowed_pdf_roots() -> tuple[Path, ...]:
             if host_pfx:
                 configured_roots.append(host_pfx)
         configured_roots.append(str(_SERVICE_ROOT / "data"))
+        
+        print(f"[Config] INFO: No RAG_ALLOWED_PDF_ROOTS set. Derived default allowlist: {', '.join(configured_roots)}")
 
     roots: list[Path] = []
     seen: set[str] = set()

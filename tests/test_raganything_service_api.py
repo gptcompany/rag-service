@@ -43,6 +43,7 @@ class _SubmittedJob:
     paper_id: str
     pdf_path: str
     webhook_url: str | None
+    resolved_webhook_ip: str | None
     force_parser: str | None
     force_reprocess: bool
 
@@ -60,6 +61,7 @@ class _StubJobQueue:
         paper_id: str,
         pdf_path: str,
         webhook_url=None,
+        resolved_webhook_ip=None,
         force_parser=None,
         force_reprocess=False,
     ):
@@ -68,6 +70,7 @@ class _StubJobQueue:
                 paper_id=paper_id,
                 pdf_path=pdf_path,
                 webhook_url=webhook_url,
+                resolved_webhook_ip=resolved_webhook_ip,
                 force_parser=force_parser,
                 force_reprocess=force_reprocess,
             )

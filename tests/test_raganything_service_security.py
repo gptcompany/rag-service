@@ -97,11 +97,11 @@ def test_ip_rate_limiter_blocks_after_threshold():
 def test_ip_rate_limiter_evicts_stale_buckets():
     limiter = svc.IpRateLimiter(max_requests=100, window_sec=1)
 
-    for i in range(10001):
+    for i in range(2001):
         limiter.allow(f"10.0.{i // 256}.{i % 256}")
 
     original_size = len(limiter._requests)
-    assert original_size >= 10001
+    assert original_size >= 2001
 
     for bucket in limiter._requests.values():
         for j in range(len(bucket)):
@@ -129,10 +129,8 @@ def test_sanitize_webhook_url_allows_allowlisted_internal_host(monkeypatch):
     monkeypatch.setattr(svc, "ALLOW_PRIVATE_WEBHOOK_HOSTS", False)
     monkeypatch.setattr(svc, "ALLOWED_WEBHOOK_HOSTS", ("host.docker.internal", ".trusted.internal"))
 
-    assert (
-        svc.sanitize_webhook_url("http://host.docker.internal:5678/webhook")
-        == "http://host.docker.internal:5678/webhook"
-    )
+    url, ip = svc.sanitize_webhook_url("http://host.docker.internal:5678/webhook")
+    assert url == "http://host.docker.internal:5678/webhook"
 
 
 def test_sanitize_webhook_url_rejects_private_resolved_ip(monkeypatch):
@@ -149,4 +147,6 @@ def test_sanitize_webhook_url_allows_public_resolved_ip(monkeypatch):
     monkeypatch.setattr(svc, "ALLOWED_WEBHOOK_HOSTS", ())
     monkeypatch.setattr(svc, "_resolve_webhook_ips", lambda host, port: {"93.184.216.34"})
 
-    assert svc.sanitize_webhook_url("https://example.com/callback") == "https://example.com/callback"
+    url, ip = svc.sanitize_webhook_url("https://example.com/callback")
+    assert url == "https://example.com/callback"
+    assert ip == "93.184.216.34"

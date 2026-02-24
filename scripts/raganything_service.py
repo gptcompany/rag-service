@@ -24,6 +24,8 @@ import hmac
 import socket
 import ipaddress
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.poolmanager import PoolManager
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from urllib.parse import urlsplit
@@ -163,11 +165,15 @@ def translate_container_to_host_path(pdf_path: str) -> str:
 
 def _extract_api_key(headers) -> Optional[str]:
     """Extract API key from X-API-Key or Authorization: Bearer."""
-    api_key = headers.get("X-API-Key", "").strip()
+    def clean(val: str) -> str:
+        # Strip and remove control/non-printable characters
+        return "".join(c for c in val.strip() if c.isprintable()).strip()
+
+    api_key = clean(headers.get("X-API-Key", ""))
     if api_key:
         return api_key
 
-    auth_header = headers.get("Authorization", "").strip()
+    auth_header = clean(headers.get("Authorization", ""))
     if auth_header.lower().startswith("bearer "):
         token = auth_header[7:].strip()
         if token:
@@ -206,16 +212,16 @@ def _resolve_webhook_ips(hostname: str, port: int) -> set[str]:
     return resolved_ips
 
 
-def sanitize_webhook_url(webhook_url: Optional[str]) -> Optional[str]:
-    """Validate callback URL and apply SSRF protections."""
+def sanitize_webhook_url(webhook_url: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Validate callback URL and apply SSRF protections. Returns (url, resolved_ip)."""
     if webhook_url is None:
-        return None
+        return None, None
     if not isinstance(webhook_url, str):
         raise ValueError("webhook_url must be a string")
 
     raw_url = webhook_url.strip()
     if not raw_url:
-        return None
+        return None, None
     if len(raw_url) > 2048:
         raise ValueError("webhook_url is too long")
 
@@ -234,11 +240,12 @@ def sanitize_webhook_url(webhook_url: Optional[str]) -> Optional[str]:
     except ValueError as exc:
         raise ValueError("webhook_url has invalid port") from exc
 
-    if _host_allowed_by_pattern(hostname, ALLOWED_WEBHOOK_HOSTS):
-        return raw_url
-
-    if ALLOW_PRIVATE_WEBHOOK_HOSTS:
-        return raw_url
+    if _host_allowed_by_pattern(hostname, ALLOWED_WEBHOOK_HOSTS) or ALLOW_PRIVATE_WEBHOOK_HOSTS:
+        try:
+            resolved_ips = _resolve_webhook_ips(hostname, port)
+            return raw_url, list(resolved_ips)[0] if resolved_ips else None
+        except Exception:
+            return raw_url, None
 
     if hostname in {"localhost"} or hostname.endswith(".localhost") or hostname.endswith(".local") or hostname.endswith(".internal"):
         raise PermissionError("webhook_url host is not allowed")
@@ -252,7 +259,7 @@ def sanitize_webhook_url(webhook_url: Optional[str]) -> Optional[str]:
     if ip_obj is not None:
         if not ip_obj.is_global:
             raise PermissionError("webhook_url host is not allowed")
-        return raw_url
+        return raw_url, str(ip_obj)
 
     try:
         resolved_ips = _resolve_webhook_ips(hostname, port)
@@ -262,10 +269,13 @@ def sanitize_webhook_url(webhook_url: Optional[str]) -> Optional[str]:
     if not resolved_ips:
         raise ValueError("webhook_url host could not be resolved")
 
+    # Use first resolved IP for the pinning
+    primary_ip = list(resolved_ips)[0]
+
     if any(not _is_public_ip(ip) for ip in resolved_ips):
         raise PermissionError("webhook_url host is not allowed")
 
-    return raw_url
+    return raw_url, primary_ip
 
 
 def sanitize_pdf_path(pdf_path: str) -> str:
@@ -483,6 +493,7 @@ class Job:
     pdf_path: str
     status: JobStatus = JobStatus.QUEUED
     webhook_url: Optional[str] = None
+    resolved_webhook_ip: Optional[str] = None
     force_parser: Optional[str] = None  # Force specific parser (mineru/docling)
     force_reprocess: bool = False  # Skip hash dedup check
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -587,7 +598,7 @@ class IpRateLimiter:
             bucket.append(now)
 
             # Evict stale buckets to prevent unbounded memory growth
-            if len(self._requests) > 10000:
+            if len(self._requests) > 2000:
                 cutoff = now - self.window_sec
                 stale = [ip for ip, bkt in self._requests.items() if not bkt or bkt[-1] < cutoff]
                 for ip in stale:
@@ -612,6 +623,7 @@ class AsyncJobQueue:
         paper_id: str,
         pdf_path: str,
         webhook_url: Optional[str] = None,
+        resolved_webhook_ip: Optional[str] = None,
         force_parser: Optional[str] = None,
         force_reprocess: bool = False,
     ) -> Job:
@@ -622,6 +634,7 @@ class AsyncJobQueue:
             paper_id=paper_id,
             pdf_path=pdf_path,
             webhook_url=webhook_url,
+            resolved_webhook_ip=resolved_webhook_ip,
             force_parser=force_parser,
             force_reprocess=force_reprocess,
         )
@@ -811,15 +824,11 @@ class AsyncJobQueue:
             return {"success": False, "error": str(e)}
 
     def _call_webhook(self, job: Job):
-        """Call webhook URL with job result."""
+        """Call webhook URL with job result, using pinned IP to prevent DNS rebinding."""
         if not job.webhook_url:
             return
 
         try:
-            webhook_url = sanitize_webhook_url(job.webhook_url)
-            if not webhook_url:
-                return
-
             payload = {
                 "job_id": job.job_id,
                 "paper_id": job.paper_id,
@@ -828,13 +837,40 @@ class AsyncJobQueue:
                 "error": job.error,
             }
 
-            response = requests.post(
-                webhook_url,
+            class PinnedHostAdapter(HTTPAdapter):
+                def __init__(self, pinned_ip, **kwargs):
+                    self.pinned_ip = pinned_ip
+                    super().__init__(**kwargs)
+
+                def init_poolmanager(self, *args, **kwargs):
+                    class PinnedPoolManager(PoolManager):
+                        def __init__(self, pinned_ip, *args, **kwargs):
+                            self.pinned_ip = pinned_ip
+                            super().__init__(*args, **kwargs)
+
+                        def connection_from_host(self, host, port=None, scheme="http", pool_kwargs=None):
+                            # Force use of the pinned IP instead of resolving 'host'
+                            return super().connection_from_host(self.pinned_ip, port, scheme, pool_kwargs)
+
+                    self.poolmanager = PinnedPoolManager(self.pinned_ip, *args, **kwargs)
+
+            session = requests.Session()
+            if job.resolved_webhook_ip:
+                # Pin the connection to the already-validated IP
+                adapter = PinnedHostAdapter(job.resolved_webhook_ip)
+                parsed = urlsplit(job.webhook_url)
+                prefix = f"{parsed.scheme}://{parsed.netloc}"
+                session.mount(prefix, adapter)
+
+            response = session.post(
+                job.webhook_url,
                 json=payload,
                 timeout=30,
                 headers={"Content-Type": "application/json"},
             )
-            print(f"[Webhook] Called {webhook_url}: {response.status_code}")
+            print(f"[Webhook] Called {job.webhook_url} (IP: {job.resolved_webhook_ip or 'auto'}): {response.status_code}")
+        except Exception as e:
+            print(f"[Webhook] Failed to call {job.webhook_url}: {e}")
         except Exception as e:
             print(f"[Webhook] Failed to call {job.webhook_url}: {e}")
 
@@ -1193,7 +1229,7 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
             data = self.read_json_body()
             pdf_path = data.get("pdf_path", "")
             paper_id = data.get("paper_id", "")
-            webhook_url = sanitize_webhook_url(data.get("webhook_url"))  # Optional callback URL
+            webhook_url, resolved_webhook_ip = sanitize_webhook_url(data.get("webhook_url"))  # Optional callback URL
             force_parser = data.get("force_parser")
             if force_parser and force_parser not in ("mineru", "docling", "paddleocr"):
                 self.send_json(
@@ -1232,6 +1268,8 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
                     # Call webhook with cached result if configured
                     if webhook_url:
                         try:
+                            # For cached results, we use a simple post for now as it's not a job
+                            # (Ideally would use the same pinning if we have the IP)
                             requests.post(
                                 webhook_url,
                                 json={
@@ -1268,7 +1306,7 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
             pdf_path = sanitize_pdf_path(pdf_path)
 
             # Submit job (returns immediately)
-            job = job_queue.submit_job(paper_id, pdf_path, webhook_url, force_parser, force_reprocess)
+            job = job_queue.submit_job(paper_id, pdf_path, webhook_url, resolved_webhook_ip, force_parser, force_reprocess)
 
             self.send_json(
                 202,  # Accepted

@@ -45,6 +45,8 @@ services:
     build: .
     ports:
       - "${RAG_PORT:-8767}:${RAG_PORT:-8767}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./.env:/app/.env:ro
       - ./.env.keys:/app/.env.keys:ro
@@ -93,7 +95,16 @@ class ConfigStep:
     name = "Service configuration"
 
     def check(self) -> bool:
-        return get_env(ENV_VARS["openai_model"]) is not None
+        required_keys = (
+            "openai_model",
+            "ollama_model",
+            "embedding_model",
+            "embedding_dim",
+            "default_parser",
+            "port",
+            "host",
+        )
+        return all(get_env(ENV_VARS[key]) is not None for key in required_keys)
 
     def install(self, console: Console) -> bool:
         config: dict[str, str] = {}
@@ -261,6 +272,18 @@ class ConfigStep:
             if ollama_mode == "sidecar"
             else COMPOSE_EXTERNAL_TEMPLATE
         )
+        if compose.exists():
+            existing = compose.read_text()
+            if existing != template:
+                overwrite = questionary.confirm(
+                    "docker-compose.yml already exists. Overwrite with wizard template?",
+                    default=False,
+                ).ask()
+                if not overwrite:
+                    console.print(
+                        "  [yellow]Skipped docker-compose.yml generation (kept existing file)[/]"
+                    )
+                    return
         compose.write_text(template)
         console.print(
             f"  [green]Generated docker-compose.yml (ollama: {ollama_mode})[/]"

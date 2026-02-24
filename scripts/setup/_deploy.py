@@ -48,8 +48,12 @@ class DeployStep:
             if ollama_mode is None:
                 return False
 
-        set_env(ENV_VARS["deploy_mode"], mode)
-        set_env(ENV_VARS["ollama_mode"], ollama_mode)
+        if not set_env(ENV_VARS["deploy_mode"], mode):
+            console.print("  [red]Failed to persist deploy mode to .env[/]")
+            return False
+        if not set_env(ENV_VARS["ollama_mode"], ollama_mode):
+            console.print("  [red]Failed to persist Ollama mode to .env[/]")
+            return False
 
         console.print(f"  Deploy mode: [bold]{mode}[/]")
         if mode == "docker":

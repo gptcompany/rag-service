@@ -171,13 +171,13 @@ class TestSecretsStep:
 
     @patch("subprocess.run")
     def test_check_passes_when_key_exists(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0)
+        mock_run.return_value = MagicMock(returncode=0, stdout="sk-test\n")
         step = self._make_step()
         assert step._key_exists() is True
 
     @patch("subprocess.run")
     def test_check_fails_when_key_missing(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=1)
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
         step = self._make_step()
         assert step._key_exists() is False
 
@@ -185,6 +185,15 @@ class TestSecretsStep:
     def test_check_fails_on_error(self, _):
         step = self._make_step()
         assert step._key_exists() is False
+
+    @patch("subprocess.run")
+    def test_check_does_not_use_bash_shell_wrapper(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="sk-test\n")
+        step = self._make_step()
+        assert step._key_exists() is True
+        args = mock_run.call_args.args[0]
+        assert args[0] == "dotenvx"
+        assert "bash" not in args
 
     def test_install_returns_false(self):
         """Cannot auto-install secrets."""
@@ -383,6 +392,28 @@ class TestDeployStep:
         result = step.install(console)
         assert result is False
 
+    @patch("scripts.setup._deploy.set_env", side_effect=[False])
+    @patch("questionary.select")
+    def test_install_fails_when_deploy_mode_not_persisted(self, mock_select, mock_set):
+        step = self._make_step()
+        console = MagicMock()
+        mock_select.return_value.ask.return_value = "host"
+        result = step.install(console)
+        assert result is False
+        mock_set.assert_called_once()
+        assert any("Failed to persist deploy mode" in str(c) for c in console.print.call_args_list)
+
+    @patch("scripts.setup._deploy.set_env", side_effect=[True, False])
+    @patch("questionary.select")
+    def test_install_fails_when_ollama_mode_not_persisted(self, mock_select, mock_set):
+        step = self._make_step()
+        console = MagicMock()
+        mock_select.return_value.ask.return_value = "host"
+        result = step.install(console)
+        assert result is False
+        assert mock_set.call_count == 2
+        assert any("Failed to persist Ollama mode" in str(c) for c in console.print.call_args_list)
+
     def test_verify_delegates_to_check(self):
         step = self._make_step()
         with patch.object(step, "check", return_value=True):
@@ -403,6 +434,22 @@ class TestConfigStep:
 
     @patch("scripts.setup._config.get_env", return_value=None)
     def test_check_fails_when_not_configured(self, _):
+        step = self._make_step()
+        assert step.check() is False
+
+    @patch("scripts.setup._config.get_env")
+    def test_check_fails_when_config_is_partial(self, mock_get):
+        from scripts.setup._config_presets import ENV_VARS
+        values = {
+            ENV_VARS["openai_model"]: "gpt-4o-mini",
+            ENV_VARS["ollama_model"]: "qwen3:8b",
+            ENV_VARS["embedding_model"]: "BAAI/bge-large-en-v1.5",
+            # Missing embedding_dim
+            ENV_VARS["default_parser"]: "mineru",
+            ENV_VARS["port"]: "8767",
+            ENV_VARS["host"]: "0.0.0.0",
+        }
+        mock_get.side_effect = lambda key: values.get(key)
         step = self._make_step()
         assert step.check() is False
 
@@ -444,6 +491,30 @@ class TestConfigStep:
         result = step.install(console)
         assert result is True
         assert mock_set.call_count >= 8  # At least 8 env vars set
+
+    def test_external_compose_template_supports_linux_host_gateway(self):
+        from scripts.setup._config import COMPOSE_EXTERNAL_TEMPLATE
+        assert "host.docker.internal:host-gateway" in COMPOSE_EXTERNAL_TEMPLATE
+
+    @patch("questionary.confirm")
+    @patch("scripts.setup._config.get_env", return_value="external")
+    def test_generate_docker_files_does_not_overwrite_compose_when_declined(self, mock_get, mock_confirm, tmp_path):
+        from scripts.setup import _config as config_mod
+
+        step = self._make_step()
+        console = MagicMock()
+        mock_confirm.return_value.ask.return_value = False
+
+        compose = tmp_path / "docker-compose.yml"
+        original = "services:\n  custom: {}\n"
+        compose.write_text(original)
+        (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+
+        with patch.object(config_mod, "_SERVICE_ROOT", tmp_path):
+            step._generate_docker_files(console)
+
+        assert compose.read_text() == original
+        assert any("Skipped docker-compose.yml generation" in str(c) for c in console.print.call_args_list)
 
 
 # ── ConfigPresets ───────────────────────────────────────────

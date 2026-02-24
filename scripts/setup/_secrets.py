@@ -18,12 +18,12 @@ class SecretsStep:
         """Check if OPENAI_API_KEY is set in dotenvx. NEVER reveals the value."""
         try:
             result = subprocess.run(
-                ["bash", "-c",
-                 f'dotenvx get OPENAI_API_KEY -f {ENV_FILE} 2>/dev/null | grep -q .'],
+                ["dotenvx", "get", "OPENAI_API_KEY", "-f", ENV_FILE],
                 capture_output=True,
+                text=True,
                 timeout=10,
             )
-            return result.returncode == 0
+            return result.returncode == 0 and bool((result.stdout or "").strip())
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return False
 

@@ -94,6 +94,23 @@ def test_ip_rate_limiter_blocks_after_threshold():
     assert retry_after > 0
 
 
+def test_ip_rate_limiter_evicts_stale_buckets():
+    limiter = svc.IpRateLimiter(max_requests=100, window_sec=1)
+
+    for i in range(10001):
+        limiter.allow(f"10.0.{i // 256}.{i % 256}")
+
+    original_size = len(limiter._requests)
+    assert original_size >= 10001
+
+    for bucket in limiter._requests.values():
+        for j in range(len(bucket)):
+            bucket[j] = bucket[j] - 10
+
+    limiter.allow("192.168.1.1")
+    assert len(limiter._requests) < original_size
+
+
 def test_extract_api_key_from_headers_supports_bearer_and_x_api_key():
     assert svc._extract_api_key({"X-API-Key": "abc123"}) == "abc123"
     assert svc._extract_api_key({"Authorization": "Bearer token-1"}) == "token-1"

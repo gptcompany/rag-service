@@ -20,6 +20,7 @@ import threading
 import time
 import uuid
 import hashlib
+import hmac
 import socket
 import ipaddress
 import requests
@@ -584,6 +585,14 @@ class IpRateLimiter:
                 return False, retry_after
 
             bucket.append(now)
+
+            # Evict stale buckets to prevent unbounded memory growth
+            if len(self._requests) > 10000:
+                cutoff = now - self.window_sec
+                stale = [ip for ip, bkt in self._requests.items() if not bkt or bkt[-1] < cutoff]
+                for ip in stale:
+                    del self._requests[ip]
+
             return True, 0
 
 
@@ -1079,7 +1088,7 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
             return True
 
         provided_key = _extract_api_key(self.headers)
-        if provided_key and provided_key == SERVICE_API_KEY:
+        if provided_key and hmac.compare_digest(provided_key, SERVICE_API_KEY):
             return True
 
         self.send_json(401, {"success": False, "error": "Unauthorized"})
@@ -1185,7 +1194,16 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
             pdf_path = data.get("pdf_path", "")
             paper_id = data.get("paper_id", "")
             webhook_url = sanitize_webhook_url(data.get("webhook_url"))  # Optional callback URL
-            force_parser = data.get("force_parser")  # Optional: force specific parser (mineru/docling)
+            force_parser = data.get("force_parser")
+            if force_parser and force_parser not in ("mineru", "docling", "paddleocr"):
+                self.send_json(
+                    400,
+                    {
+                        "success": False,
+                        "error": f"Invalid parser: {force_parser}. Must be one of: mineru, docling, paddleocr",
+                    },
+                )
+                return
 
             if not pdf_path or not paper_id:
                 self.send_json(400, {"success": False, "error": "Missing pdf_path or paper_id"})

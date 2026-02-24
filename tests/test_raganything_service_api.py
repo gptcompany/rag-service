@@ -218,6 +218,26 @@ def test_process_endpoint_blocks_path_outside_allowlist(rag_api_server):
     assert "outside allowed" in data["error"]
 
 
+def test_process_endpoint_rejects_invalid_parser(rag_api_server):
+    pdf = rag_api_server["pdf_root"] / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+
+    status, data = _http_json_request(
+        rag_api_server["port"],
+        "POST",
+        "/process",
+        payload={
+            "pdf_path": str(pdf),
+            "paper_id": "arxiv:2401.12345",
+            "force_parser": "evil_parser",
+        },
+        headers={"X-API-Key": "test-api-key"},
+    )
+
+    assert status == 400
+    assert "Invalid parser" in data["error"]
+
+
 def test_query_endpoint_requires_api_key_when_enabled(rag_api_server):
     status, data = _http_json_request(
         rag_api_server["port"],

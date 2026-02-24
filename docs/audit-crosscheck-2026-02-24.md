@@ -21,7 +21,7 @@ Not yet implemented:
 - FastAPI migration
 - Modular refactor (`jobs`, `rag`, HTTP handler split)
 - Webhook signing (HMAC) / callback authentication
-- End-to-end integration tests for `/process` and `/query`
+- Full end-to-end integration tests for `/process` and `/query` (real RAG runtime)
 
 ## Audit Finding Cross-Check
 
@@ -53,7 +53,7 @@ Not yet implemented:
 ### 4. Test Coverage
 
 - Missing integration tests for `/process` and `/query`: Confirmed
-  - Status: Still missing
+  - Status: Partially fixed (`tests/test_raganything_service_api.py` covers HTTP behavior with stubbed runtime)
 - Missing unit tests for runtime guards/queue/breaker: Confirmed
   - Status: Partially fixed (`pdf_path`, rate limiter, webhook/auth helpers)
 

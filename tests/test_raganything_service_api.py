@@ -85,6 +85,19 @@ class _StubJobQueue:
         return None
 
 
+class _StubJobRecord:
+    def __init__(self, job_id: str, status: str = "completed"):
+        self.job_id = job_id
+        self._status = status
+
+    def to_dict(self) -> dict:
+        return {
+            "job_id": self.job_id,
+            "status": self._status,
+            "result": {"success": True},
+        }
+
+
 def _http_json_request(port: int, method: str, path: str, payload=None, headers=None):
     req_headers = dict(headers or {})
     body = None
@@ -236,3 +249,54 @@ def test_health_endpoint_remains_public_when_api_key_enabled(rag_api_server):
     assert data["status"] == "ok"
     assert "circuit_breaker" in data
 
+
+def test_jobs_endpoint_returns_queue_status_with_api_key(rag_api_server):
+    rag_api_server["job_queue"].get_status = lambda: {
+        "active_jobs": 1,
+        "max_workers": 2,
+        "jobs": [{"job_id": "job12345", "status": "queued"}],
+        "completed_in_history": 3,
+    }
+
+    status, data = _http_json_request(
+        rag_api_server["port"],
+        "GET",
+        "/jobs",
+        headers={"X-API-Key": "test-api-key"},
+    )
+
+    assert status == 200
+    assert data["active_jobs"] == 1
+    assert data["jobs"][0]["job_id"] == "job12345"
+
+
+def test_job_detail_endpoint_returns_active_job(rag_api_server):
+    job = _StubJobRecord("job12345", status="processing")
+    rag_api_server["job_queue"].get_job = lambda job_id: job if job_id == "job12345" else None
+
+    status, data = _http_json_request(
+        rag_api_server["port"],
+        "GET",
+        "/jobs/job12345",
+        headers={"Authorization": "Bearer test-api-key"},
+    )
+
+    assert status == 200
+    assert data["job_id"] == "job12345"
+    assert data["status"] == "processing"
+
+
+def test_job_detail_endpoint_falls_back_to_history(rag_api_server):
+    hist_job = _StubJobRecord("hist0001", status="completed")
+    rag_api_server["job_queue"].job_history = [hist_job]
+
+    status, data = _http_json_request(
+        rag_api_server["port"],
+        "GET",
+        "/jobs/hist0001",
+        headers={"X-API-Key": "test-api-key"},
+    )
+
+    assert status == 200
+    assert data["job_id"] == "hist0001"
+    assert data["status"] == "completed"

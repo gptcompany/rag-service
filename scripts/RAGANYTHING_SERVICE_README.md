@@ -79,11 +79,37 @@ When "Host" is selected in step 1:
   ```
 - This will install the `raganything.service` unit and start it.
 
+### CPU Auto-Tuning (MinerU, plug-and-play)
+
+The service auto-tunes CPU-heavy MinerU processing at startup for non-technical users.
+
+What it does automatically:
+- Detects available CPU capacity using `os.cpu_count()`, Linux CPU affinity, and cgroup CPU quota (when present)
+- Chooses a conservative async job concurrency (`RAG_MAX_CONCURRENT_JOBS`) for CPU-bound parsing
+- Chooses a bounded queue depth (`RAG_MAX_QUEUE_DEPTH`)
+- Applies safe CPU thread defaults for native libs **only if you have not set them already**
+  - `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS`
+  - `TORCH_NUM_THREADS`, `TORCH_NUM_INTEROP_THREADS`
+  - `OMP_DYNAMIC=FALSE`, `MKL_DYNAMIC=FALSE`, `OMP_WAIT_POLICY=PASSIVE`
+  - `TOKENIZERS_PARALLELISM=false`
+
+Defaults are conservative on CPU-only hosts (example: 40 cores → `max_workers=1`, queue depth `4`, thread budget `16`).
+
+Optional overrides (advanced users):
+- `RAG_MAX_CONCURRENT_JOBS`
+- `RAG_MAX_QUEUE_DEPTH`
+- `RAG_AUTO_CPU_THREAD_TUNING=false` (disable auto thread defaults)
+- Any explicitly set thread env var is preserved (the service will not overwrite it)
+
+You can inspect the effective runtime values from:
+- `GET /health` → `runtime_tuning`
+- `GET /health` / `GET /jobs` → `jobs.max_workers`, `jobs.max_queue_depth`, `jobs.queue_capacity`
+
 ## Endpoints
 
 | Endpoint | Method | Auth (if `RAG_API_KEY` set) | Description |
 |----------|--------|-----------------------------|-------------|
-| `/health` | GET | No (default exempt) | Liveness + basic status |
+| `/health` | GET | No (default exempt) | Liveness + status, parser config, runtime tuning |
 | `/status` | GET | No (default exempt) | Circuit breaker + queue status |
 | `/jobs` | GET | Yes | Active jobs |
 | `/jobs/{id}` | GET | Yes | Job status |

@@ -95,3 +95,73 @@ def test_detect_cgroup_cpu_limit_parses_v2_cpu_max(monkeypatch):
 
     assert limit == 3
     assert source == "cgroup-v2"
+
+
+def test_apply_runtime_cpu_thread_tuning_sets_defaults_when_unset(monkeypatch):
+    for key in (
+        "OMP_NUM_THREADS",
+        "OMP_DYNAMIC",
+        "OMP_WAIT_POLICY",
+        "MKL_NUM_THREADS",
+        "MKL_DYNAMIC",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "TORCH_NUM_THREADS",
+        "TORCH_NUM_INTEROP_THREADS",
+        "TOKENIZERS_PARALLELISM",
+        "RAG_AUTO_CPU_THREAD_TUNING",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    runtime_queue_tuning = {
+        "effective_cpu_count": 40,
+        "max_concurrent_jobs": 1,
+    }
+    tuning = svc._apply_runtime_cpu_thread_tuning(runtime_queue_tuning)
+
+    assert tuning["enabled"] is True
+    assert tuning["recommended_threads"] == 16
+    assert tuning["recommended_torch_interop_threads"] == 2
+    assert tuning["applied_env"]["OMP_NUM_THREADS"] == "16"
+    assert tuning["applied_env"]["TORCH_NUM_INTEROP_THREADS"] == "2"
+    assert tuning["preserved_env"] == {}
+
+
+def test_apply_runtime_cpu_thread_tuning_preserves_existing_env(monkeypatch):
+    for key in (
+        "OMP_NUM_THREADS",
+        "OMP_DYNAMIC",
+        "OMP_WAIT_POLICY",
+        "MKL_NUM_THREADS",
+        "MKL_DYNAMIC",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "TORCH_NUM_THREADS",
+        "TORCH_NUM_INTEROP_THREADS",
+        "TOKENIZERS_PARALLELISM",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OMP_NUM_THREADS", "24")
+    monkeypatch.setenv("TORCH_NUM_THREADS", "12")
+    monkeypatch.delenv("RAG_AUTO_CPU_THREAD_TUNING", raising=False)
+
+    tuning = svc._apply_runtime_cpu_thread_tuning(
+        {"effective_cpu_count": 40, "max_concurrent_jobs": 1}
+    )
+
+    assert tuning["enabled"] is True
+    assert tuning["preserved_env"]["OMP_NUM_THREADS"] == "24"
+    assert tuning["preserved_env"]["TORCH_NUM_THREADS"] == "12"
+    # Missing vars are still auto-filled
+    assert tuning["applied_env"]["MKL_NUM_THREADS"] == "16"
+
+
+def test_apply_runtime_cpu_thread_tuning_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("RAG_AUTO_CPU_THREAD_TUNING", "false")
+
+    tuning = svc._apply_runtime_cpu_thread_tuning(
+        {"effective_cpu_count": 40, "max_concurrent_jobs": 1}
+    )
+
+    assert tuning["enabled"] is False
+    assert tuning["source"] == "env:RAG_AUTO_CPU_THREAD_TUNING=false"

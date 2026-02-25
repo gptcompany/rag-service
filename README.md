@@ -29,6 +29,22 @@ python3 -m scripts.setup
 
 If the CLI was installed into the project venv without activating it, use `.venv/bin/rag-setup`.
 
+## Performance (CPU / MinerU)
+
+The service now includes plug-and-play CPU auto-tuning for MinerU workloads:
+
+- Auto-detects visible CPU capacity (host cores, CPU affinity, cgroup quota)
+- Chooses a conservative default job concurrency (`RAG_MAX_CONCURRENT_JOBS`) for CPU-heavy parsing
+- Chooses a bounded queue depth (`RAG_MAX_QUEUE_DEPTH`)
+- Applies safe thread defaults (`OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `TORCH_NUM_THREADS`, etc.) **only if not already set**
+
+You can inspect the effective values at runtime via `GET /health` (`runtime_tuning` and `jobs` fields).
+
+Power-user overrides (optional):
+- `RAG_MAX_CONCURRENT_JOBS`
+- `RAG_MAX_QUEUE_DEPTH`
+- `RAG_AUTO_CPU_THREAD_TUNING=false` (disable auto thread defaults)
+
 ## Audit & Status
 
 See [docs/audit-crosscheck-2026-02-24.md](docs/audit-crosscheck-2026-02-24.md) for the latest security hardening status.

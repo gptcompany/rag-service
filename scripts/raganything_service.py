@@ -130,6 +130,20 @@ def _parse_optional_int_env(name: str, *, min_value: int) -> Optional[int]:
     return value
 
 
+def _parse_optional_bool_env(name: str, *, default: bool) -> bool:
+    """Parse optional boolean env var with forgiving values."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    print(f"[Config] WARNING: {name} must be a boolean; got '{raw}'. Using default={default}.")
+    return default
+
+
 def _auto_max_concurrent_jobs(effective_cpu_count: int) -> int:
     """Conservative default for CPU-heavy PDF parsing (MinerU on CPU)."""
     if effective_cpu_count <= 48:
@@ -142,6 +156,22 @@ def _auto_max_concurrent_jobs(effective_cpu_count: int) -> int:
 def _auto_queue_depth(max_concurrent_jobs: int) -> int:
     """Keep queue finite but useful for non-technical users."""
     return min(16, max(4, max_concurrent_jobs * 4))
+
+
+def _auto_cpu_threads(effective_cpu_count: int, max_concurrent_jobs: int) -> int:
+    """Conservative per-process thread budget for CPU-bound parsing/inference."""
+    workers = max(1, max_concurrent_jobs)
+    per_job_budget = max(1, effective_cpu_count // workers)
+    if per_job_budget <= 4:
+        return per_job_budget
+    return min(16, max(4, per_job_budget))
+
+
+def _auto_torch_interop_threads(cpu_threads: int) -> int:
+    """Keep inter-op thread count low to reduce scheduling overhead."""
+    if cpu_threads <= 8:
+        return 1
+    return 2
 
 
 def _resolve_runtime_queue_tuning() -> dict:
@@ -173,6 +203,57 @@ def _resolve_runtime_queue_tuning() -> dict:
         "max_queue_depth_source": queue_depth_source,
     }
 
+
+def _apply_runtime_cpu_thread_tuning(runtime_queue_tuning: dict) -> dict:
+    """Apply conservative CPU thread env defaults unless user already set them."""
+    enabled = _parse_optional_bool_env("RAG_AUTO_CPU_THREAD_TUNING", default=True)
+    if not enabled:
+        return {
+            "enabled": False,
+            "source": "env:RAG_AUTO_CPU_THREAD_TUNING=false",
+            "recommended_threads": None,
+            "recommended_torch_interop_threads": None,
+            "applied_env": {},
+            "preserved_env": {},
+        }
+
+    effective_cpu_count = int(runtime_queue_tuning["effective_cpu_count"])
+    max_workers = int(runtime_queue_tuning["max_concurrent_jobs"])
+    cpu_threads = _auto_cpu_threads(effective_cpu_count, max_workers)
+    torch_interop_threads = _auto_torch_interop_threads(cpu_threads)
+
+    # Only fill defaults when the user/deployment has not already configured them.
+    desired = {
+        "OMP_NUM_THREADS": str(cpu_threads),
+        "OMP_DYNAMIC": "FALSE",
+        "OMP_WAIT_POLICY": "PASSIVE",
+        "MKL_NUM_THREADS": str(cpu_threads),
+        "MKL_DYNAMIC": "FALSE",
+        "OPENBLAS_NUM_THREADS": str(cpu_threads),
+        "NUMEXPR_NUM_THREADS": str(cpu_threads),
+        "TORCH_NUM_THREADS": str(cpu_threads),
+        "TORCH_NUM_INTEROP_THREADS": str(torch_interop_threads),
+        "TOKENIZERS_PARALLELISM": "false",
+    }
+    applied_env: dict[str, str] = {}
+    preserved_env: dict[str, str] = {}
+    for key, value in desired.items():
+        existing = os.getenv(key)
+        if existing is None or existing == "":
+            os.environ[key] = value
+            applied_env[key] = value
+        else:
+            preserved_env[key] = existing
+
+    return {
+        "enabled": True,
+        "source": "auto-defaults-if-unset",
+        "recommended_threads": cpu_threads,
+        "recommended_torch_interop_threads": torch_interop_threads,
+        "applied_env": applied_env,
+        "preserved_env": preserved_env,
+    }
+
 # Configuration
 HOST = os.getenv("RAG_HOST", "0.0.0.0")
 PORT = int(os.getenv("RAG_PORT", "8767"))
@@ -181,6 +262,11 @@ OUTPUT_BASE = os.getenv("RAG_OUTPUT_BASE", str(_SERVICE_ROOT / "data" / "extract
 RAG_STORAGE = os.getenv("RAG_STORAGE_DIR", str(_SERVICE_ROOT / "data" / "rag_knowledge_base"))
 PROCESS_TIMEOUT = 14400  # 4 hours (MinerU on CPU is very slow)
 RUNTIME_QUEUE_TUNING = _resolve_runtime_queue_tuning()
+RUNTIME_CPU_THREAD_TUNING = _apply_runtime_cpu_thread_tuning(RUNTIME_QUEUE_TUNING)
+RUNTIME_TUNING = {
+    **RUNTIME_QUEUE_TUNING,
+    "cpu_thread_tuning": RUNTIME_CPU_THREAD_TUNING,
+}
 MAX_CONCURRENT_JOBS = int(RUNTIME_QUEUE_TUNING["max_concurrent_jobs"])
 MAX_QUEUE_DEPTH = int(RUNTIME_QUEUE_TUNING["max_queue_depth"])
 MAX_JOB_HISTORY = 100  # Keep last N completed jobs
@@ -1614,7 +1700,7 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
                     "circuit_breaker": circuit_breaker.get_status(),
                     "jobs": job_queue.get_status(),
                     "hash_store": hash_store.get_stats(),
-                    "runtime_tuning": RUNTIME_QUEUE_TUNING,
+                    "runtime_tuning": RUNTIME_TUNING,
                     "parser_router": {
                         "threshold_pages": PARSER_PAGE_THRESHOLD,
                         "default_parser": DEFAULT_PARSER,
@@ -1719,6 +1805,14 @@ if __name__ == "__main__":
         f"affinity={RUNTIME_QUEUE_TUNING['affinity_cpu_count']}, "
         f"cgroup={RUNTIME_QUEUE_TUNING['cgroup_cpu_limit']}; "
         f"source={RUNTIME_QUEUE_TUNING['effective_cpu_source']})"
+    )
+    print(
+        "[Config] CPU thread tuning: "
+        f"enabled={RUNTIME_CPU_THREAD_TUNING['enabled']} "
+        f"recommended={RUNTIME_CPU_THREAD_TUNING['recommended_threads']} "
+        f"torch_interop={RUNTIME_CPU_THREAD_TUNING['recommended_torch_interop_threads']} "
+        f"applied={len(RUNTIME_CPU_THREAD_TUNING['applied_env'])} "
+        f"preserved={len(RUNTIME_CPU_THREAD_TUNING['preserved_env'])}"
     )
     print("\nEndpoints:")
     print("  POST /process      - Submit async job (returns job_id)")

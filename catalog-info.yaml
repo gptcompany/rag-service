@@ -1,0 +1,22 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: rag-service
+  title: RAG Service
+  description: >
+    Hardened HTTP service and setup wizard for document processing and semantic
+    query over a RAGAnything knowledge base.
+  annotations:
+    github.com/project-slug: gptcompany/rag-service
+  tags:
+    - python
+    - rag
+    - llm
+    - documents
+    - retrieval
+    - setup-wizard
+spec:
+  type: service
+  lifecycle: experimental
+  owner: user:default/sam
+  system: claude-infrastructure

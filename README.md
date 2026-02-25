@@ -1,5 +1,11 @@
 # RAG Service
 
+![CI](https://github.com/gptcompany/rag-service/actions/workflows/ci.yml/badge.svg?branch=main)
+![Sandbox Validation](https://github.com/gptcompany/rag-service/actions/workflows/sandbox-validate.yml/badge.svg?branch=main)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square&logo=python)
+![RAG](https://img.shields.io/badge/RAG-RAGAnything-blueviolet?style=flat-square)
+![License](https://img.shields.io/github/license/gptcompany/rag-service?style=flat-square)
+
 This project provides a hardened HTTP service for document processing and semantic query over a RAGAnything knowledge base.
 
 ## Documentation

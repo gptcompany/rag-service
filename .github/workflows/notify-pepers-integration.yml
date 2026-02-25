@@ -1,0 +1,35 @@
+name: Notify PePeRS Integration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - "tests/**"
+      - "raganything/**"
+      - "pyproject.toml"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    if: github.repository_owner == 'gptcompany'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repository dispatch to pepers
+        if: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN != '' }}
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN }}
+          repository: gptcompany/pepers
+          event-type: rag-service-update
+          client-payload: >-
+            {"source_repo":"${{ github.repository }}","source_ref":"${{ github.ref_name }}","source_sha":"${{ github.sha }}","source_workflow":"${{ github.workflow }}"}
+
+      - name: Missing token notice
+        if: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN == '' }}
+        run: |
+          echo "PEPERS_REPO_DISPATCH_TOKEN is not configured; skipping repository_dispatch." >> "$GITHUB_STEP_SUMMARY"

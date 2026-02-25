@@ -1,0 +1,113 @@
+name: Sandbox Deploy Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_labels_json:
+        description: 'Runner labels JSON (e.g. ["self-hosted","linux","ws"])'
+        required: true
+        type: string
+        default: '["self-hosted","linux","ws"]'
+      attempt_start:
+        description: Try to start the service with scripts/raganything_start.sh before probing
+        required: true
+        type: boolean
+        default: false
+      health_port:
+        description: Host port for /health
+        required: true
+        type: string
+        default: '8767'
+      health_timeout_sec:
+        description: Timeout in seconds for health probe
+        required: true
+        type: string
+        default: '180'
+      leave_running:
+        description: Leave started service running after validation
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  sandbox-validate:
+    name: Host Service Health Validation
+    runs-on: ${{ fromJSON(inputs.runner_labels_json) }}
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install minimal CLI/runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . requests
+
+      - name: Smoke setup CLI help
+        run: python -m scripts.setup.main --help
+
+      - name: Optionally start RAG service
+        if: ${{ inputs.attempt_start }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts
+          nohup bash ./scripts/raganything_start.sh > .artifacts/rag-service.log 2>&1 &
+          echo $! > .artifacts/rag-service.pid
+          sleep 2
+          ps -fp "$(cat .artifacts/rag-service.pid)" || true
+
+      - name: Wait for RAG health endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="http://localhost:${{ inputs.health_port }}/health"
+          timeout_s="${{ inputs.health_timeout_sec }}"
+          start="$(date +%s)"
+          while true; do
+            if curl -fsS --max-time 5 "$url" >/tmp/rag-health.json; then
+              echo "OK  $url"
+              cat /tmp/rag-health.json | python -m json.tool || cat /tmp/rag-health.json
+              break
+            fi
+            if [ $(( $(date +%s) - start )) -ge "$timeout_s" ]; then
+              echo "TIMEOUT $url"
+              exit 1
+            fi
+            sleep 3
+          done
+
+      - name: Capture diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p .artifacts
+          ss -ltnp > .artifacts/listeners.txt || true
+          if [ -f .artifacts/rag-service.pid ]; then
+            ps -fp "$(cat .artifacts/rag-service.pid)" > .artifacts/service-process.txt || true
+          fi
+          if [ -f .artifacts/rag-service.log ]; then
+            tail -200 .artifacts/rag-service.log > .artifacts/rag-service-log-tail.txt || true
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-service-sandbox-validation
+          path: .artifacts/
+          if-no-files-found: ignore
+
+      - name: Stop started service
+        if: ${{ always() && inputs.attempt_start && !inputs.leave_running }}
+        shell: bash
+        run: |
+          if [ -f .artifacts/rag-service.pid ]; then
+            kill "$(cat .artifacts/rag-service.pid)" || true
+          fi

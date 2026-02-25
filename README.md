@@ -2,6 +2,7 @@
 
 ![CI](https://github.com/gptcompany/rag-service/actions/workflows/ci.yml/badge.svg?branch=main)
 ![Sandbox Validation](https://github.com/gptcompany/rag-service/actions/workflows/sandbox-validate.yml/badge.svg?branch=main)
+![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/gptprojectmanager/ac39e6516b7114f96b84ba445b8e7a83/raw/rag-service-coverage.json)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square&logo=python)
 ![RAG](https://img.shields.io/badge/RAG-RAGAnything-blueviolet?style=flat-square)
 ![License](https://img.shields.io/github/license/gptcompany/rag-service?style=flat-square)

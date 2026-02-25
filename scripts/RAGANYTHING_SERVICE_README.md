@@ -1,4 +1,4 @@
-# RAGanything Service (v3.3, Hardened)
+# RAGanything Service (v3.3-smart, Hardened)
 
 HTTP service for document processing (`/process`) and semantic query (`/query`) over the local RAGAnything knowledge base.
 
@@ -12,11 +12,50 @@ cd /path/to/rag-service
 Wizard subcommands:
 
 ```bash
-python3 -m scripts.setup deps
-python3 -m scripts.setup models
-python3 -m scripts.setup service
-python3 -m scripts.setup verify
+python3 -m scripts.setup deploy   # Choose deployment mode: host or Docker
+python3 -m scripts.setup deps     # Install dependencies: Python venv, MinerU, Ollama, LibreOffice
+python3 -m scripts.setup models   # Download/verify AI models: MinerU + Ollama
+python3 -m scripts.setup config   # Configure service: models, parser, network
+python3 -m scripts.setup service  # Check RAG service health and startup
+python3 -m scripts.setup verify   # Full service verification and status display
 ```
+
+## Setup Wizard (step-by-step)
+
+Running `python -m scripts.setup` without arguments executes all steps in ordine:
+
+| # | Step | Description | Skip condition |
+|---|------|-------------|----------------|
+| 1 | **Deploy mode** | Choose Host (systemd) or Docker (Dockerfile + compose) | — |
+| 2 | **Python venv** | Verify `.venv` with dependencies installed | Skipped in Docker mode |
+| 3 | **MinerU models** | Download MinerU HuggingFace models to `~/.cache/huggingface` | Skipped in Docker mode |
+| 4 | **Ollama** | Verify Ollama is installed, serving, and has the configured model | Skipped in Docker + sidecar |
+| 5 | **LibreOffice** | Check `libreoffice --headless` is available (for PPTX/DOCX) | Skipped in Docker mode |
+| 6 | **Secrets** | Verify `OPENAI_API_KEY` is set in dotenvx-encrypted `.env` | — |
+| 7 | **Configuration** | Interactive 6-section config: OpenAI model, Ollama model, embedding, reranker, parser, network | — |
+| 8 | **Service** | Check if the RAG service is running on the configured port | — |
+| 9 | **Verify** | End-to-end status summary | — |
+
+In Docker mode, steps 2-5 are conditionally skipped (dependencies are handled by the container image).
+
+### Dependencies
+
+| Dependency | Required by | Install |
+|------------|-------------|---------|
+| Python 3.10+ | Core | `apt install python3.10` |
+| [dotenvx](https://dotenvx.com) | Secrets management | `curl -fsS https://dotenvx.sh \| sh` |
+| [Ollama](https://ollama.ai) | Local LLM | `curl -fsSL https://ollama.ai/install.sh \| sh` |
+| LibreOffice | PPTX/DOCX conversion | `apt install libreoffice-core` |
+| MinerU models | PDF parsing (default) | Auto-downloaded by wizard |
+| `OPENAI_API_KEY` | GPT queries + vision | Set via `dotenvx set OPENAI_API_KEY <key> -f .env` |
+
+### Docker mode
+
+When "Docker" is selected in step 1, the wizard:
+- Generates `Dockerfile` (if not present)
+- Generates `docker-compose.yml` with chosen Ollama mode (external or sidecar)
+- External mode uses `host.docker.internal:host-gateway` for Linux compatibility
+- Sidecar mode adds a dedicated Ollama container with GPU reservations
 
 ## Endpoints
 
@@ -60,7 +99,7 @@ curl -X POST http://localhost:8767/process \
   }'
 ```
 
-### Process a PDF (API key enabled)
+### Process a PDF (API key enabled, full options)
 
 ```bash
 curl -X POST http://localhost:8767/process \
@@ -69,9 +108,19 @@ curl -X POST http://localhost:8767/process \
   -d '{
     "pdf_path": "/absolute/path/to/papers/kelly.pdf",
     "paper_id": "arxiv:2401.12345",
-    "webhook_url": "https://example.com/rag-callback"
+    "webhook_url": "https://example.com/rag-callback",
+    "force_parser": "docling",
+    "force_reprocess": true
   }'
 ```
+
+Optional `/process` parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `webhook_url` | string | Callback URL for async result delivery |
+| `force_parser` | string | Override smart router: `mineru`, `docling`, or `paddleocr` |
+| `force_reprocess` | bool | Reprocess even if cached result exists (default `false`) |
 
 ### Query Knowledge Graph
 
@@ -85,11 +134,14 @@ curl -X POST http://localhost:8767/query \
   }'
 ```
 
-Query modes:
+Query modes: `hybrid` (default), `local`, `global`
 
-- `hybrid` (default)
-- `local`
-- `global`
+Optional `/query` parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `mode` | string | Query mode (default `hybrid`) |
+| `context_only` | bool | Return context without LLM synthesis (default `false`) |
 
 ## PDF Path Security
 
@@ -223,6 +275,19 @@ If behind a trusted reverse proxy:
 | `RAG_TRUSTED_PROXY_HOPS` | `1` | Trusted proxy hops for XFF parsing (Nth from right) |
 | `RAG_ALLOW_PRIVATE_WEBHOOK_HOSTS` | `false` | Allow internal/private webhook targets |
 | `RAG_ALLOWED_WEBHOOK_HOSTS` | unset | CSV hostname allowlist (`host`, `.suffix`) |
+
+## Smart Parser Router
+
+Documents are automatically routed to the best parser based on page count:
+
+- Short documents (< `RAG_PARSER_THRESHOLD` pages) → default parser (configurable)
+- Long documents (>= threshold) → `docling` (better for large PDFs)
+
+Override per-request with `force_parser` in `/process`.
+
+## PDF Hash Deduplication
+
+Each processed PDF is hashed (SHA-256) and tracked in `processed_pdfs.json`. Resubmitting the same content with a different `paper_id` is detected and skipped. Use `force_reprocess=true` to bypass.
 
 ## Storage
 

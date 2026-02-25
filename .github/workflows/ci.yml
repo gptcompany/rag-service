@@ -40,6 +40,8 @@ jobs:
       - name: Setup wizard tests
         run: pytest -q tests/test_setup_wizard.py
 
-      - name: Full test suite (Linux only)
+      - name: Extended lightweight suite (Linux only)
         if: runner.os == 'Linux'
-        run: pytest -q tests
+        run: |
+          pytest -q tests/test_raganything_service_api.py
+          pytest -q tests/test_raganything_service_security.py

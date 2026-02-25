@@ -9,6 +9,7 @@ from rich.console import Console
 
 class LibreOfficeStep:
     name = "LibreOffice (optional)"
+    description = "Optional Office file conversion support (.doc/.ppt/.xls)"
 
     def _find_binary(self) -> bool:
         return shutil.which("libreoffice") is not None or shutil.which("soffice") is not None

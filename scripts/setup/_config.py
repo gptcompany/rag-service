@@ -106,6 +106,7 @@ def _parse_positive_int(value: str, *, min_value: int = 1, max_value: int | None
 
 class ConfigStep:
     name = "Service configuration"
+    description = "Configure models, parser, host/port, and runtime options"
 
     def check(self) -> bool:
         required_keys = (

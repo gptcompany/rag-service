@@ -14,6 +14,7 @@ RAGANYTHING_DIR = SERVICE_ROOT / "raganything"
 
 class PythonStep:
     name = "Python venv + raganything"
+    description = "Create .venv and install raganything + wizard dependencies"
 
     def check(self) -> bool:
         """Python >= 3.10, venv exists, raganything importable."""

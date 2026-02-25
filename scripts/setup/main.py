@@ -5,7 +5,7 @@ import sys
 
 from rich.console import Console
 
-from ._runner import run_steps
+from ._runner import run_interactive_menu, run_steps
 from ._deploy import DeployStep
 from ._python import PythonStep
 from ._mineru import MineruStep
@@ -119,7 +119,7 @@ def main(args: list[str] | None = None) -> int:
     if args and args[0] in ("-h", "--help", "help"):
         console.print("[bold]Usage:[/] python -m scripts.setup [subcommand]\n")
         console.print("[bold]Subcommands:[/]")
-        console.print("  [dim](no args)[/]   Run all setup steps")
+        console.print("  [dim](no args)[/]   Interactive setup menu (free navigation)")
         for name, (_, desc) in SUBCOMMANDS.items():
             console.print(f"  [bold]{name:10s}[/] {desc}")
         return 0
@@ -134,8 +134,10 @@ def main(args: list[str] | None = None) -> int:
         console.print(f"Valid: {', '.join(SUBCOMMANDS.keys())}")
         return 1
     else:
-        console.print("[bold]Running all setup steps...[/]\n")
+        console.print("[bold]Interactive setup menu[/]\n")
         steps = _all_steps()
+        ok = run_interactive_menu(steps, console)
+        return 0 if ok else 1
 
     ok = run_steps(steps, console)
     return 0 if ok else 1

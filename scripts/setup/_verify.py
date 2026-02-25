@@ -22,6 +22,7 @@ def _get_deploy_mode() -> str:
 
 class VerifyStep:
     name = "Service verification"
+    description = "Run a health/status summary and show runtime diagnostics"
 
     def check(self) -> bool:
         # Always run full verification -- never skip

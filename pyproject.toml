@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rag-service-setup"
+version = "0.1.0"
+description = "Interactive setup wizard for the RAG service"
+requires-python = ">=3.10"
+dependencies = [
+  "questionary>=2.0",
+  "rich>=13.0",
+]
+
+[project.scripts]
+rag-setup = "scripts.setup.main:main"
+
+[tool.setuptools.packages.find]
+include = ["scripts", "scripts.*"]

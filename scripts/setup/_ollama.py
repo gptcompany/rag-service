@@ -14,6 +14,7 @@ MODEL_NAME = "qwen3:8b"
 
 class OllamaStep:
     name = "Ollama + qwen3:8b"
+    description = "Verify Ollama is running, then pull the model if missing"
 
     def _ollama_installed(self) -> bool:
         return shutil.which("ollama") is not None

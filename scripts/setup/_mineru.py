@@ -18,6 +18,7 @@ MINERU_MODEL_PREFIXES = [
 
 class MineruStep:
     name = "MinerU models"
+    description = "Download and verify MinerU PDF extraction models (~2GB)"
 
     def check(self) -> bool:
         """Check if MinerU model files exist in HuggingFace cache."""

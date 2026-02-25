@@ -299,6 +299,23 @@ class TestRunner:
         assert result is True
         step.install.assert_not_called()
 
+    @patch("questionary.select")
+    def test_interactive_menu_exit_immediately(self, mock_select):
+        from scripts.setup._runner import run_interactive_menu
+
+        step = MagicMock()
+        step.name = "Already OK"
+        step.description = "Test step"
+        step.check.return_value = True
+
+        mock_select.return_value.ask.return_value = ("exit", None)
+
+        console = MagicMock()
+        result = run_interactive_menu([step], console)
+
+        assert result is True
+        step.install.assert_not_called()
+
 
 # ── Main CLI ─────────────────────────────────────────────────
 
@@ -313,7 +330,7 @@ class TestMain:
         result = main(["nonexistent"])
         assert result == 1
 
-    @patch("scripts.setup.main.run_steps", return_value=True)
+    @patch("scripts.setup.main.run_interactive_menu", return_value=True)
     def test_all_steps(self, mock_run):
         from scripts.setup.main import main
         result = main([])
@@ -326,10 +343,16 @@ class TestMain:
         result = main(["verify"])
         assert result == 0
 
-    @patch("scripts.setup.main.run_steps", return_value=False)
+    @patch("scripts.setup.main.run_interactive_menu", return_value=False)
     def test_failure_returns_1(self, mock_run):
         from scripts.setup.main import main
         result = main([])
+        assert result == 1
+
+    @patch("scripts.setup.main.run_steps", return_value=False)
+    def test_subcommand_failure_returns_1(self, mock_run):
+        from scripts.setup.main import main
+        result = main(["verify"])
         assert result == 1
 
     @patch("scripts.setup.main.run_steps", return_value=True)
@@ -418,6 +441,15 @@ class TestDeployStep:
         step = self._make_step()
         with patch.object(step, "check", return_value=True):
             assert step.verify() is True
+
+
+class TestStepMetadata:
+    def test_all_steps_have_descriptions(self):
+        from scripts.setup.main import _all_steps
+
+        for step in _all_steps():
+            assert isinstance(step.description, str)
+            assert step.description.strip()
 
 
 # ── ConfigStep ──────────────────────────────────────────────

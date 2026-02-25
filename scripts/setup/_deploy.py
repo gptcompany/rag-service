@@ -9,6 +9,7 @@ from ._config_presets import ENV_VARS, get_env, set_env
 
 class DeployStep:
     name = "Deployment mode"
+    description = "Choose host or Docker deployment (plus Ollama mode for Docker)"
 
     def check(self) -> bool:
         return get_env(ENV_VARS["deploy_mode"]) is not None

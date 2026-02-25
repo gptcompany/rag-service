@@ -6,23 +6,35 @@ HTTP service for document processing (`/process`) and semantic query (`/query`) 
 
 ```bash
 cd /path/to/rag-service
+
+# Install setup CLI entrypoint (editable)
+pip install -e .
+# or
+uv pip install -e .
+
+# Run interactive setup menu
+rag-setup
+
+# Fallback (same wizard)
 .venv/bin/python3 -m scripts.setup
 ```
 
 Wizard subcommands:
 
 ```bash
-python3 -m scripts.setup deploy   # Choose deployment mode: host or Docker
-python3 -m scripts.setup deps     # Install dependencies: Python venv, MinerU, Ollama, LibreOffice
-python3 -m scripts.setup models   # Download/verify AI models: MinerU + Ollama
-python3 -m scripts.setup config   # Configure service: models, parser, network
-python3 -m scripts.setup service  # Check RAG service health and startup
-python3 -m scripts.setup verify   # Full service verification and status display
+rag-setup deploy   # Choose deployment mode: host or Docker
+rag-setup deps     # Install dependencies: Python venv, MinerU, Ollama, LibreOffice
+rag-setup models   # Download/verify AI models: MinerU + Ollama
+rag-setup config   # Configure service: models, parser, network
+rag-setup service  # Check RAG service health and startup
+rag-setup verify   # Full service verification and status display
 ```
+
+If you prefer not to install the CLI entrypoint, replace `rag-setup` with `python3 -m scripts.setup`.
 
 ## Setup Wizard (step-by-step)
 
-Running `python -m scripts.setup` without arguments executes all steps in ordine:
+Running `rag-setup` (or `python -m scripts.setup`) without arguments opens an interactive menu with free navigation across the steps below:
 
 | # | Step | Description | Skip condition |
 |---|------|-------------|----------------|
@@ -44,7 +56,7 @@ In Docker mode, steps 2-5 are conditionally skipped (dependencies are handled by
 |------------|-------------|---------|
 | Python 3.10+ | Core | `apt install python3.10` |
 | [dotenvx](https://dotenvx.com) | Secrets management | `curl -fsS https://dotenvx.sh \| sh` |
-| [Ollama](https://ollama.ai) | Local LLM | `curl -fsSL https://ollama.ai/install.sh \| sh` |
+| [Ollama](https://ollama.com) | Local LLM | `curl -fsSL https://ollama.com/install.sh \| sh` |
 | LibreOffice | PPTX/DOCX conversion | `apt install libreoffice-core` |
 | MinerU models | PDF parsing (default) | Auto-downloaded by wizard |
 | `OPENAI_API_KEY` | GPT queries + vision | Set via `dotenvx set OPENAI_API_KEY <key> -f .env` |
@@ -57,6 +69,16 @@ When "Docker" is selected in step 1, the wizard:
 - External mode uses `host.docker.internal:host-gateway` for Linux compatibility
 - Sidecar mode adds a dedicated Ollama container with GPU reservations
 
+### Host mode (systemd)
+
+When "Host" is selected in step 1:
+- The service is configured to run directly on the machine.
+- Use the included script to automatically create/update the systemd unit:
+  ```bash
+  sudo bash update-systemd.sh
+  ```
+- This will install the `raganything.service` unit and start it.
+
 ## Endpoints
 
 | Endpoint | Method | Auth (if `RAG_API_KEY` set) | Description |
@@ -66,6 +88,7 @@ When "Docker" is selected in step 1, the wizard:
 | `/jobs` | GET | Yes | Active jobs |
 | `/jobs/{id}` | GET | Yes | Job status |
 | `/process` | POST | Yes | Submit PDF processing job |
+| `/process/sync` | POST | Yes | Synchronous PDF processing (legacy) |
 | `/query` | POST | Yes | Query knowledge graph |
 | `/reset-circuit-breaker` | GET | Yes | Manual breaker reset |
 

@@ -13,6 +13,7 @@ ENV_FILE = os.getenv("RAG_ENV_FILE", str(_SERVICE_ROOT / ".env"))
 
 class SecretsStep:
     name = "Secrets (OPENAI_API_KEY)"
+    description = "Ensure OPENAI_API_KEY exists in dotenvx-managed .env secrets"
 
     def _key_exists(self) -> bool:
         """Check if OPENAI_API_KEY is set in dotenvx. NEVER reveals the value."""
@@ -33,10 +34,7 @@ class SecretsStep:
     def install(self, console: Console) -> bool:
         console.print("  [yellow]OPENAI_API_KEY not found in dotenvx secrets.[/]")
         console.print()
-        console.print("  Add it with the secret-add helper:")
-        console.print(f"    [bold]secret-add OPENAI_API_KEY[/]")
-        console.print()
-        console.print("  Or manually add to the dotenvx-encrypted env file:")
+        console.print("  Manually add to the dotenvx-encrypted env file:")
         console.print(f"    [bold]dotenvx set OPENAI_API_KEY <your-key> -f {ENV_FILE}[/]")
         console.print()
         console.print("  [dim]The key is needed for GPT-4o-mini embeddings and queries.[/]")

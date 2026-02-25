@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import urllib.request
 import urllib.error
+import getpass
 from pathlib import Path
 
 from rich.console import Console
@@ -25,6 +26,7 @@ def _get_deploy_mode() -> str:
 
 class ServiceStep:
     name = "RAG Service"
+    description = "Check /health and show startup instructions for host or Docker"
 
     def _health_ok(self) -> bool:
         port = _get_port()
@@ -68,7 +70,7 @@ class ServiceStep:
             console.print("    [dim][Service][/]")
             console.print(f"    [dim]ExecStart={START_SCRIPT}[/]")
             console.print("    [dim]Restart=on-failure[/]")
-            console.print("    [dim]User=sam[/]")
+            console.print(f"    [dim]User={getpass.getuser()}[/]")
             console.print("    [dim][Install][/]")
             console.print("    [dim]WantedBy=multi-user.target[/]")
 

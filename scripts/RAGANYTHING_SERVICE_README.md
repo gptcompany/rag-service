@@ -8,7 +8,7 @@ HTTP service for document processing (`/process`) and semantic query (`/query`) 
 cd /path/to/rag-service
 
 # Install setup CLI entrypoint (editable)
-pip install -e .
+python3 -m pip install -e .
 # or
 uv pip install -e .
 
@@ -30,11 +30,11 @@ rag-setup service  # Check RAG service health and startup
 rag-setup verify   # Full service verification and status display
 ```
 
-If you prefer not to install the CLI entrypoint, replace `rag-setup` with `python3 -m scripts.setup`.
+If `rag-setup` is not on your `PATH`, use `.venv/bin/rag-setup` (or `.venv/bin/python3 -m scripts.setup`).
 
 ## Setup Wizard (step-by-step)
 
-Running `rag-setup` (or `python -m scripts.setup`) without arguments opens an interactive menu with free navigation across the steps below:
+Running `rag-setup` (or `python3 -m scripts.setup`) without arguments opens an interactive menu with free navigation across the steps below:
 
 | # | Step | Description | Skip condition |
 |---|------|-------------|----------------|

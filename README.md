@@ -10,7 +10,7 @@ The primary documentation is located at [scripts/RAGANYTHING_SERVICE_README.md](
 
 ```bash
 # Install the local setup CLI (editable)
-pip install -e .
+python3 -m pip install -e .
 # or
 uv pip install -e .
 
@@ -20,6 +20,8 @@ rag-setup
 # Fallback (same wizard entry point)
 python3 -m scripts.setup
 ```
+
+If the CLI was installed into the project venv without activating it, use `.venv/bin/rag-setup`.
 
 ## Audit & Status
 

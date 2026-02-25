@@ -42,6 +42,137 @@ from typing import Optional
 # Add raganything to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "raganything"))
 
+
+def _read_text_file(path: str) -> Optional[str]:
+    """Read a small text file and strip it. Returns None when unreadable."""
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def _detect_cgroup_cpu_limit() -> tuple[Optional[int], str]:
+    """Return CPU limit from cgroups as integer CPUs (if constrained)."""
+    # cgroup v2
+    cpu_max = _read_text_file("/sys/fs/cgroup/cpu.max")
+    if cpu_max:
+        try:
+            quota_str, period_str = cpu_max.split()
+            if quota_str != "max":
+                quota = int(quota_str)
+                period = int(period_str)
+                if quota > 0 and period > 0:
+                    return max(1, (quota + period - 1) // period), "cgroup-v2"
+        except (ValueError, TypeError):
+            print("[Config] WARNING: Invalid /sys/fs/cgroup/cpu.max; ignoring cgroup CPU quota")
+
+    # cgroup v1
+    for base in ("/sys/fs/cgroup/cpu", "/sys/fs/cgroup/cpu,cpuacct"):
+        quota_text = _read_text_file(f"{base}/cpu.cfs_quota_us")
+        period_text = _read_text_file(f"{base}/cpu.cfs_period_us")
+        if quota_text is None or period_text is None:
+            continue
+        try:
+            quota = int(quota_text)
+            period = int(period_text)
+            if quota > 0 and period > 0:
+                return max(1, (quota + period - 1) // period), "cgroup-v1"
+        except (ValueError, TypeError):
+            print(f"[Config] WARNING: Invalid cgroup v1 CPU quota files under {base}; ignoring")
+
+    return None, "none"
+
+
+def _detect_effective_cpu_capacity() -> dict:
+    """Detect CPU capacity visible to this process (host/affinity/cgroup aware)."""
+    host_cpu_count = os.cpu_count() or 1
+
+    affinity_cpu_count = None
+    try:
+        affinity_cpu_count = len(os.sched_getaffinity(0))  # Linux
+    except (AttributeError, OSError):
+        affinity_cpu_count = None
+
+    cgroup_cpu_limit, cgroup_source = _detect_cgroup_cpu_limit()
+
+    candidates = [host_cpu_count]
+    source_parts = ["cpu_count"]
+    if affinity_cpu_count and affinity_cpu_count > 0:
+        candidates.append(affinity_cpu_count)
+        source_parts.append("affinity")
+    if cgroup_cpu_limit and cgroup_cpu_limit > 0:
+        candidates.append(cgroup_cpu_limit)
+        source_parts.append(cgroup_source)
+
+    effective_cpu_count = max(1, min(candidates))
+    return {
+        "host_cpu_count": host_cpu_count,
+        "affinity_cpu_count": affinity_cpu_count,
+        "cgroup_cpu_limit": cgroup_cpu_limit,
+        "effective_cpu_count": effective_cpu_count,
+        "effective_cpu_source": "+".join(source_parts),
+    }
+
+
+def _parse_optional_int_env(name: str, *, min_value: int) -> Optional[int]:
+    """Parse an optional integer env var with bounds. Returns None when unset/invalid."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        print(f"[Config] WARNING: {name} must be an integer; got '{raw}'. Using auto value.")
+        return None
+    if value < min_value:
+        print(f"[Config] WARNING: {name} must be >= {min_value}; got {value}. Using auto value.")
+        return None
+    return value
+
+
+def _auto_max_concurrent_jobs(effective_cpu_count: int) -> int:
+    """Conservative default for CPU-heavy PDF parsing (MinerU on CPU)."""
+    if effective_cpu_count <= 48:
+        return 1
+    if effective_cpu_count <= 96:
+        return 2
+    return min(4, max(3, effective_cpu_count // 48))
+
+
+def _auto_queue_depth(max_concurrent_jobs: int) -> int:
+    """Keep queue finite but useful for non-technical users."""
+    return min(16, max(4, max_concurrent_jobs * 4))
+
+
+def _resolve_runtime_queue_tuning() -> dict:
+    """Resolve queue tuning with env override > auto-discovery > fallback."""
+    cpu_info = _detect_effective_cpu_capacity()
+    effective_cpu_count = int(cpu_info["effective_cpu_count"])
+
+    env_max_workers = _parse_optional_int_env("RAG_MAX_CONCURRENT_JOBS", min_value=1)
+    if env_max_workers is not None:
+        max_workers = env_max_workers
+        max_workers_source = "env:RAG_MAX_CONCURRENT_JOBS"
+    else:
+        max_workers = _auto_max_concurrent_jobs(effective_cpu_count)
+        max_workers_source = "auto:cpu-discovery"
+
+    env_queue_depth = _parse_optional_int_env("RAG_MAX_QUEUE_DEPTH", min_value=0)
+    if env_queue_depth is not None:
+        queue_depth = env_queue_depth
+        queue_depth_source = "env:RAG_MAX_QUEUE_DEPTH"
+    else:
+        queue_depth = _auto_queue_depth(max_workers)
+        queue_depth_source = "auto:4x-workers"
+
+    return {
+        **cpu_info,
+        "max_concurrent_jobs": max_workers,
+        "max_concurrent_jobs_source": max_workers_source,
+        "max_queue_depth": queue_depth,
+        "max_queue_depth_source": queue_depth_source,
+    }
+
 # Configuration
 HOST = os.getenv("RAG_HOST", "0.0.0.0")
 PORT = int(os.getenv("RAG_PORT", "8767"))
@@ -49,8 +180,9 @@ _SERVICE_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_BASE = os.getenv("RAG_OUTPUT_BASE", str(_SERVICE_ROOT / "data" / "extracted"))
 RAG_STORAGE = os.getenv("RAG_STORAGE_DIR", str(_SERVICE_ROOT / "data" / "rag_knowledge_base"))
 PROCESS_TIMEOUT = 14400  # 4 hours (MinerU on CPU is very slow)
-MAX_CONCURRENT_JOBS = 2  # Max parallel MinerU processes
-MAX_QUEUE_DEPTH = 10  # Max jobs waiting in queue (total capacity = 2 + 10 = 12)
+RUNTIME_QUEUE_TUNING = _resolve_runtime_queue_tuning()
+MAX_CONCURRENT_JOBS = int(RUNTIME_QUEUE_TUNING["max_concurrent_jobs"])
+MAX_QUEUE_DEPTH = int(RUNTIME_QUEUE_TUNING["max_queue_depth"])
 MAX_JOB_HISTORY = 100  # Keep last N completed jobs
 
 # API Keys (optional - fallback to local if not available)
@@ -934,6 +1066,8 @@ class AsyncJobQueue:
             return {
                 "active_jobs": len(active),
                 "max_workers": self.max_workers,
+                "max_queue_depth": MAX_QUEUE_DEPTH,
+                "queue_capacity": self.max_workers + MAX_QUEUE_DEPTH,
                 "jobs": active,
                 "completed_in_history": len(self.job_history),
             }
@@ -1480,6 +1614,7 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
                     "circuit_breaker": circuit_breaker.get_status(),
                     "jobs": job_queue.get_status(),
                     "hash_store": hash_store.get_stats(),
+                    "runtime_tuning": RUNTIME_QUEUE_TUNING,
                     "parser_router": {
                         "threshold_pages": PARSER_PAGE_THRESHOLD,
                         "default_parser": DEFAULT_PARSER,
@@ -1572,7 +1707,19 @@ if __name__ == "__main__":
     print(f"RAGanything service v3.3-smart starting on http://{HOST}:{PORT}")
     print(f"Knowledge base storage: {RAG_STORAGE}")
     print(f"Output directory: {OUTPUT_BASE}")
-    print(f"Timeout: {PROCESS_TIMEOUT}s | Max concurrent: {MAX_CONCURRENT_JOBS}")
+    print(
+        f"Timeout: {PROCESS_TIMEOUT}s | Queue tuning: "
+        f"workers={MAX_CONCURRENT_JOBS} ({RUNTIME_QUEUE_TUNING['max_concurrent_jobs_source']}), "
+        f"queue={MAX_QUEUE_DEPTH} ({RUNTIME_QUEUE_TUNING['max_queue_depth_source']})"
+    )
+    print(
+        "[Config] CPU discovery: "
+        f"effective={RUNTIME_QUEUE_TUNING['effective_cpu_count']} "
+        f"(host={RUNTIME_QUEUE_TUNING['host_cpu_count']}, "
+        f"affinity={RUNTIME_QUEUE_TUNING['affinity_cpu_count']}, "
+        f"cgroup={RUNTIME_QUEUE_TUNING['cgroup_cpu_limit']}; "
+        f"source={RUNTIME_QUEUE_TUNING['effective_cpu_source']})"
+    )
     print("\nEndpoints:")
     print("  POST /process      - Submit async job (returns job_id)")
     print("  GET  /jobs/{id}    - Poll job status")

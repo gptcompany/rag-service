@@ -17,3 +17,9 @@ rag-setup = "scripts.setup.main:main"
 
 [tool.setuptools.packages.find]
 include = ["scripts", "scripts.*"]
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+branch = "main"
+commit_message = "chore(release): v{version}"
+build_command = ""

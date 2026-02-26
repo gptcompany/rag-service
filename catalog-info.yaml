@@ -7,7 +7,13 @@ metadata:
     Hardened HTTP service and setup wizard for document processing and semantic
     query over a RAGAnything knowledge base.
   annotations:
+    backstage.io/techdocs-ref: dir:.
     github.com/project-slug: gptcompany/rag-service
+    github.com/workflows-folder: .github/workflows
+  links:
+    - url: https://github.com/gptcompany/rag-service
+      title: GitHub
+      icon: github
   tags:
     - python
     - rag

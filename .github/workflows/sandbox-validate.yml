@@ -103,6 +103,7 @@ jobs:
           name: rag-service-sandbox-validation
           path: .artifacts/
           if-no-files-found: ignore
+          retention-days: 7
 
       - name: Stop started service
         if: ${{ always() && inputs.attempt_start && !inputs.leave_running }}

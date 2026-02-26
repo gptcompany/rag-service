@@ -8,7 +8,6 @@ on:
       - "tests/**"
       - "raganything/**"
       - "pyproject.toml"
-      - ".github/workflows/**"
   workflow_dispatch:
 
 permissions:
@@ -20,7 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Repository dispatch to pepers
-        if: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN != '' }}
+        env:
+          DISPATCH_TOKEN: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN }}
+        if: env.DISPATCH_TOKEN != ''
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN }}
@@ -30,6 +31,8 @@ jobs:
             {"source_repo":"${{ github.repository }}","source_ref":"${{ github.ref_name }}","source_sha":"${{ github.sha }}","source_workflow":"${{ github.workflow }}"}
 
       - name: Missing token notice
-        if: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN == '' }}
+        env:
+          DISPATCH_TOKEN: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN }}
+        if: env.DISPATCH_TOKEN == ''
         run: |
           echo "PEPERS_REPO_DISPATCH_TOKEN is not configured; skipping repository_dispatch." >> "$GITHUB_STEP_SUMMARY"

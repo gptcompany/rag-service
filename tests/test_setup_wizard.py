@@ -16,19 +16,79 @@ class TestPythonStep:
         from scripts.setup._python import PythonStep
         return PythonStep()
 
-    @patch("scripts.setup._python.VENV_DIR", new_callable=lambda: PropertyMock)
-    def test_check_fails_when_no_venv(self, tmp_path):
+    @patch("scripts.setup._python.VENV_DIR")
+    @patch("sys.version_info", (3, 11, 0))
+    def test_check_passes(self, mock_venv_dir):
         step = self._make_step()
-        with patch.object(type(step), "check", return_value=False):
+        mock_venv_dir.__truediv__.return_value.__truediv__.return_value.exists.return_value = True
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            assert step.check() is True
+
+    @patch("sys.version_info", (3, 9, 0))
+    def test_check_fails_old_python(self):
+        step = self._make_step()
+        assert step.check() is False
+
+    @patch("scripts.setup._python.VENV_DIR")
+    @patch("sys.version_info", (3, 11, 0))
+    def test_check_fails_no_venv(self, mock_venv_dir):
+        step = self._make_step()
+        mock_venv_dir.__truediv__.return_value.__truediv__.return_value.exists.return_value = False
+        assert step.check() is False
+
+    @patch("scripts.setup._python.VENV_DIR")
+    @patch("sys.version_info", (3, 11, 0))
+    def test_check_fails_import_error(self, mock_venv_dir):
+        step = self._make_step()
+        mock_venv_dir.__truediv__.return_value.__truediv__.return_value.exists.return_value = True
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
             assert step.check() is False
 
-    def test_install_returns_bool(self):
+    @patch("scripts.setup._python.VENV_DIR")
+    def test_install_success(self, mock_venv_dir):
         step = self._make_step()
         console = MagicMock()
+        mock_venv_dir.__truediv__.return_value.__truediv__.return_value.exists.return_value = False
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1, stderr="fail")
-            result = step.install(console)
-            assert isinstance(result, bool)
+            mock_run.return_value = MagicMock(returncode=0)
+            assert step.install(console) is True
+            # Should call venv creation, pip install -e, and pip install deps
+            assert mock_run.call_count == 3
+
+    @patch("scripts.setup._python.VENV_DIR")
+    def test_install_venv_fails(self, mock_venv_dir):
+        step = self._make_step()
+        console = MagicMock()
+        mock_venv_dir.__truediv__.return_value.__truediv__.return_value.exists.return_value = False
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stderr="venv fail")
+            assert step.install(console) is False
+            assert mock_run.call_count == 1
+
+    @patch("scripts.setup._python.VENV_DIR")
+    def test_install_pip_editable_fails(self, mock_venv_dir):
+        step = self._make_step()
+        console = MagicMock()
+        mock_venv_dir.__truediv__.return_value.__truediv__.return_value.exists.return_value = True
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [MagicMock(returncode=1, stderr="pip fail")]
+            assert step.install(console) is False
+
+    @patch("scripts.setup._python.VENV_DIR")
+    def test_install_deps_fails(self, mock_venv_dir):
+        step = self._make_step()
+        console = MagicMock()
+        mock_venv_dir.__truediv__.return_value.__truediv__.return_value.exists.return_value = True
+        with patch("subprocess.run") as mock_run:
+            # 1. pip install -e success
+            # 2. pip install deps fails
+            mock_run.side_effect = [
+                MagicMock(returncode=0),
+                MagicMock(returncode=1, stderr="deps fail")
+            ]
+            assert step.install(console) is False
 
     def test_verify_delegates_to_check(self):
         step = self._make_step()

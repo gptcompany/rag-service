@@ -6,6 +6,9 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square&logo=python)
 ![RAG](https://img.shields.io/badge/RAG-RAGAnything-blueviolet?style=flat-square)
 ![License](https://img.shields.io/github/license/gptcompany/rag-service?style=flat-square)
+![Last Commit](https://img.shields.io/github/last-commit/gptcompany/rag-service?style=flat-square)
+![Issues](https://img.shields.io/github/issues/gptcompany/rag-service?style=flat-square)
+![Lines of Code](https://tokei.rs/b1/github/gptcompany/rag-service?style=flat-square)
 
 This project provides a hardened HTTP service for document processing and semantic query over a RAGAnything knowledge base.
 

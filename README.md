@@ -8,7 +8,7 @@
 ![License](https://img.shields.io/github/license/gptcompany/rag-service?style=flat-square)
 ![Last Commit](https://img.shields.io/github/last-commit/gptcompany/rag-service?style=flat-square)
 ![Issues](https://img.shields.io/github/issues/gptcompany/rag-service?style=flat-square)
-![Lines of Code](https://tokei.rs/b1/github/gptcompany/rag-service?style=flat-square)
+![Lines of Code](https://sloc.xyz/github/gptcompany/rag-service)
 
 This project provides a hardened HTTP service for document processing and semantic query over a RAGAnything knowledge base.
 

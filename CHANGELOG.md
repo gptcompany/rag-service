@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.1.1 (2026-02-26)
+
+### Bug Fixes
+
+- **ci**: Use env vars for secret checks in notify workflow
+  ([`1671e67`](https://github.com/gptcompany/rag-service/commit/1671e6756ccf90288a60afb25aab9eb64887d630))
+
+
 ## v1.1.0 (2026-02-26)
 
 ### Continuous Integration

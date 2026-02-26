@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rag-service-setup"
-version = "1.1.0"
+version = "1.1.1"
 description = "Interactive setup wizard for the RAG service"
 requires-python = ">=3.10"
 dependencies = [

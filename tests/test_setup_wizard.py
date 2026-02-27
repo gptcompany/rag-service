@@ -274,6 +274,36 @@ class TestServiceStep:
         step = self._make_step()
         assert step.check() is False
 
+    @patch("scripts.setup._service._get_deploy_mode", return_value="host")
+    @patch("scripts.setup._service.ServiceStep._systemd_enabled", return_value=True)
+    @patch("urllib.request.urlopen")
+    def test_check_passes_when_host_and_systemd_enabled(self, mock_urlopen, *_):
+        step = self._make_step()
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+        assert step.check() is True
+
+    @patch("scripts.setup._service._get_deploy_mode", return_value="host")
+    @patch("scripts.setup._service.ServiceStep._systemd_enabled", return_value=False)
+    @patch("urllib.request.urlopen")
+    def test_check_fails_when_host_and_systemd_disabled(self, mock_urlopen, *_):
+        step = self._make_step()
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+        assert step.check() is False
+
+    @patch("scripts.setup._service.shutil.which", return_value="/usr/bin/systemctl")
+    @patch("scripts.setup._service.subprocess.run")
+    def test_systemd_enabled_detects_enabled_unit(self, mock_run, _mock_which):
+        from scripts.setup._service import ServiceStep
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="enabled\n")
+        assert ServiceStep._systemd_enabled() is True
+
     def test_install_shows_instructions(self):
         step = self._make_step()
         console = MagicMock()

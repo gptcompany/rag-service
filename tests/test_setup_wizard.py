@@ -641,7 +641,7 @@ class TestConfigStep:
         mock_select.return_value.ask.side_effect = [
             "gpt-4o-mini",          # 1/6 OpenAI
             EMBEDDING_PRESETS[0],   # 3/6 Embedding (preset)
-            "mineru",               # 5/6 Parser
+            "mineru", "local",
         ]
         mock_text.return_value.ask.side_effect = [
             "qwen3:8b",  # 2/6 Ollama (custom fallback)
@@ -705,7 +705,7 @@ class TestConfigStep:
         mock_select.return_value.ask.side_effect = [
             "gpt-4o-mini",        # OpenAI
             EMBEDDING_PRESETS[0], # Embedding preset
-            "mineru",             # Parser
+            "mineru", "local",
         ]
         mock_text.return_value.ask.side_effect = [
             "qwen3:8b",  # Ollama model

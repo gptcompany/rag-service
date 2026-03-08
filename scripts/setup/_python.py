@@ -1,6 +1,7 @@
 """Setup step: Python venv and raganything installation."""
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -35,39 +36,67 @@ class PythonStep:
     def install(self, console: Console) -> bool:
         venv_python = VENV_DIR / "bin" / "python3"
         venv_pip = VENV_DIR / "bin" / "pip"
+        uv_bin = shutil.which("uv")
+        use_uv = uv_bin is not None
 
         # Create venv if missing
         if not venv_python.exists():
-            console.print("  Creating virtual environment...")
-            result = subprocess.run(
-                [sys.executable, "-m", "venv", str(VENV_DIR)],
-                capture_output=True,
-                text=True,
-            )
+            if use_uv:
+                console.print("  Creating virtual environment with uv...")
+                result = subprocess.run(
+                    [uv_bin, "venv", str(VENV_DIR)],
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                console.print("  Creating virtual environment...")
+                result = subprocess.run(
+                    [sys.executable, "-m", "venv", str(VENV_DIR)],
+                    capture_output=True,
+                    text=True,
+                )
             if result.returncode != 0:
                 console.print(f"  [red]venv creation failed:[/] {result.stderr}")
                 return False
 
         # Install raganything in editable mode
-        console.print("  Installing raganything (editable)...")
-        result = subprocess.run(
-            [str(venv_pip), "install", "-e", str(RAGANYTHING_DIR)],
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
+        if use_uv:
+            console.print("  Installing raganything (editable) with uv...")
+            result = subprocess.run(
+                [uv_bin, "pip", "--python", str(venv_python), "install", "-e", str(RAGANYTHING_DIR)],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+        else:
+            console.print("  Installing raganything (editable)...")
+            result = subprocess.run(
+                [str(venv_pip), "install", "-e", str(RAGANYTHING_DIR)],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
         if result.returncode != 0:
-            console.print(f"  [red]pip install failed:[/] {result.stderr[-500:]}")
+            console.print(f"  [red]editable install failed:[/] {result.stderr[-500:]}")
             return False
 
         # Install wizard dependencies too
-        console.print("  Installing wizard dependencies (rich, questionary)...")
-        result = subprocess.run(
-            [str(venv_pip), "install", "rich", "questionary"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        if use_uv:
+            console.print("  Installing wizard dependencies (rich, questionary) with uv...")
+            result = subprocess.run(
+                [uv_bin, "pip", "--python", str(venv_python), "install", "rich", "questionary"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        else:
+            console.print("  Installing wizard dependencies (rich, questionary)...")
+            result = subprocess.run(
+                [str(venv_pip), "install", "rich", "questionary"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
         if result.returncode != 0:
             console.print(f"  [red]Wizard deps install failed:[/] {result.stderr[-300:]}")
             return False

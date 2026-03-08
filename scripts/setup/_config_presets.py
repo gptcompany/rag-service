@@ -27,10 +27,30 @@ ENV_VARS = {
 
 _SERVICE_ROOT = Path(__file__).resolve().parent.parent.parent
 ENV_FILE = os.getenv("RAG_ENV_FILE", str(_SERVICE_ROOT / ".env"))
+_SESSION_OVERRIDES: dict[str, str] = {}
+
+
+def _read_plain_env_file() -> dict[str, str]:
+    path = Path(ENV_FILE)
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
 
 
 def get_env(key: str) -> str | None:
-    """Read a value from the dotenvx-encrypted .env file."""
+    """Read a value with robust precedence for setup-time consistency."""
+    if key in _SESSION_OVERRIDES:
+        return _SESSION_OVERRIDES[key]
+    env_val = os.environ.get(key)
+    if env_val:
+        return env_val
     try:
         result = subprocess.run(
             ["dotenvx", "get", key, "-f", ENV_FILE],
@@ -43,6 +63,9 @@ def get_env(key: str) -> str | None:
             return value
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
+    plain = _read_plain_env_file().get(key)
+    if plain:
+        return plain
     return None
 
 
@@ -60,6 +83,8 @@ def set_env(key: str, value: str) -> bool:
             if stderr:
                 print(f"[Config] dotenvx set {key} failed: {stderr}")
             return False
+        _SESSION_OVERRIDES[key] = value
+        os.environ[key] = value
         return True
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
         print(f"[Config] dotenvx set {key} failed: {exc}")

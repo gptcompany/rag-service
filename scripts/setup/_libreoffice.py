@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import platform
 import shutil
+from pathlib import Path
 
 from rich.console import Console
 
@@ -12,7 +13,13 @@ class LibreOfficeStep:
     description = "Optional Office file conversion support (.doc/.ppt/.xls)"
 
     def _find_binary(self) -> bool:
-        return shutil.which("libreoffice") is not None or shutil.which("soffice") is not None
+        if shutil.which("libreoffice") is not None or shutil.which("soffice") is not None:
+            return True
+        if platform.system() == "Darwin":
+            app_soffice = Path("/Applications/LibreOffice.app/Contents/MacOS/soffice")
+            user_soffice = Path.home() / "Applications" / "LibreOffice.app" / "Contents" / "MacOS" / "soffice"
+            return app_soffice.exists() or user_soffice.exists()
+        return False
 
     def check(self) -> bool:
         return self._find_binary()
@@ -28,7 +35,12 @@ class LibreOfficeStep:
             console.print("    [bold]sudo apt install libreoffice-core[/]")
         elif system == "Darwin":
             console.print("  Install on macOS:")
-            console.print("    [bold]brew install --cask libreoffice[/]")
+            if shutil.which("port"):
+                console.print("    [bold]sudo port install libreoffice[/]  [dim](recommended on macOS 12)[/]")
+            if shutil.which("brew"):
+                console.print("    [bold]brew install --cask libreoffice[/]")
+            if not shutil.which("port") and not shutil.which("brew"):
+                console.print("    [bold]Download installer:[/] https://www.libreoffice.org/download/")
         else:
             console.print(f"  Download from: https://www.libreoffice.org/download/")
 

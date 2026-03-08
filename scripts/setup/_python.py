@@ -36,7 +36,7 @@ class PythonStep:
     def install(self, console: Console) -> bool:
         venv_python = VENV_DIR / "bin" / "python3"
         venv_pip = VENV_DIR / "bin" / "pip"
-        uv_bin = shutil.which("uv")
+        uv_bin = self._find_uv()
         use_uv = uv_bin is not None
 
         # Create venv if missing
@@ -70,6 +70,8 @@ class PythonStep:
             )
         else:
             console.print("  Installing raganything (editable)...")
+            if not self._ensure_venv_pip(console, venv_python, venv_pip):
+                return False
             result = subprocess.run(
                 [str(venv_pip), "install", "-e", str(RAGANYTHING_DIR)],
                 capture_output=True,
@@ -91,6 +93,8 @@ class PythonStep:
             )
         else:
             console.print("  Installing wizard dependencies (rich, questionary)...")
+            if not self._ensure_venv_pip(console, venv_python, venv_pip):
+                return False
             result = subprocess.run(
                 [str(venv_pip), "install", "rich", "questionary"],
                 capture_output=True,
@@ -106,3 +110,30 @@ class PythonStep:
 
     def verify(self) -> bool:
         return self.check()
+
+    @staticmethod
+    def _find_uv() -> str | None:
+        uv_bin = shutil.which("uv")
+        if uv_bin:
+            return uv_bin
+        # Common uv install location on macOS/Linux when PATH isn't refreshed.
+        home_uv = Path.home() / ".local" / "bin" / "uv"
+        if home_uv.exists():
+            return str(home_uv)
+        return None
+
+    @staticmethod
+    def _ensure_venv_pip(console: Console, venv_python: Path, venv_pip: Path) -> bool:
+        if venv_pip.exists():
+            return True
+        console.print("  [yellow]pip missing in venv. Bootstrapping ensurepip...[/]")
+        result = subprocess.run(
+            [str(venv_python), "-m", "ensurepip", "--upgrade"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            console.print(f"  [red]ensurepip failed:[/] {result.stderr[-400:]}")
+            return False
+        return venv_pip.exists()

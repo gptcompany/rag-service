@@ -5,6 +5,7 @@ import os
 import subprocess
 from pathlib import Path
 
+import questionary
 from rich.console import Console
 
 _SERVICE_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -34,7 +35,39 @@ class SecretsStep:
     def install(self, console: Console) -> bool:
         console.print("  [yellow]OPENAI_API_KEY not found in dotenvx secrets.[/]")
         console.print()
-        console.print("  Manually add to the dotenvx-encrypted env file:")
+        console.print("  Your key is stored in dotenvx-encrypted form; value is not printed.")
+        try:
+            use_wizard = questionary.confirm(
+                "Add OPENAI_API_KEY now with hidden input?",
+                default=True,
+            ).ask()
+        except EOFError:
+            use_wizard = False
+        if use_wizard:
+            try:
+                value = questionary.password("Paste OPENAI_API_KEY (hidden):").ask()
+            except EOFError:
+                value = None
+            if not value:
+                console.print("  [yellow]No key provided.[/]")
+                return False
+            try:
+                result = subprocess.run(
+                    ["dotenvx", "set", "OPENAI_API_KEY", value, "-f", ENV_FILE],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0:
+                    console.print("  [green]OPENAI_API_KEY saved securely.[/]")
+                    os.environ["OPENAI_API_KEY"] = value
+                    return True
+                console.print("  [red]Failed to save key with dotenvx.[/]")
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                console.print("  [red]dotenvx is not available or timed out.[/]")
+            return False
+
+        console.print("  Manual command:")
         console.print(f"    [bold]dotenvx set OPENAI_API_KEY <your-key> -f {ENV_FILE}[/]")
         console.print()
         console.print("  [dim]The key is needed for GPT-4o-mini embeddings and queries.[/]")

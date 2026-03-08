@@ -244,10 +244,28 @@ class ConfigStep:
 
         # 6/6 Network
         console.print("\n  [bold cyan]6/6[/] Network")
-        port = questionary.text("Service port:", default="8767").ask()
-        if port is None:
+        current_port = get_env(ENV_VARS["port"]) or "8767"
+        port_mode = questionary.select(
+            "Service port configuration:",
+            choices=[
+                questionary.Choice("Use default port (8767)", value="default"),
+                questionary.Choice("Use custom port", value="custom"),
+            ],
+            default="custom" if current_port != "8767" else "default",
+        ).ask()
+        if port_mode is None:
             return False
-        parsed_port = _parse_positive_int(port, min_value=1, max_value=65535)
+
+        if port_mode == "default":
+            parsed_port = 8767
+        else:
+            port = questionary.text(
+                "Enter custom service port (1-65535):",
+                default=current_port,
+            ).ask()
+            if port is None:
+                return False
+            parsed_port = _parse_positive_int(port, min_value=1, max_value=65535)
         if parsed_port is None:
             console.print("  [red]Invalid port (must be an integer between 1 and 65535).[/]")
             return False

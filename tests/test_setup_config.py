@@ -61,7 +61,8 @@ def test_config_step_install_custom(tmp_path):
             "Custom",       # OpenAI select
             "Custom",       # Ollama select
             "custom",       # Embed pick
-            "mineru"        # Parser
+            "mineru",       # Parser
+            "custom",       # Port mode
         ]
         mock_text.return_value.ask.side_effect = [
             "custom-llm",   # OpenAI text

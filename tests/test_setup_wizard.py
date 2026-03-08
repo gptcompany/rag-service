@@ -310,6 +310,21 @@ class TestServiceStep:
         assert step.install(console) is False
         console.print.assert_called()
 
+    @patch("scripts.setup._service._get_deploy_mode", return_value="docker")
+    @patch("scripts.setup._service.ServiceStep._start_docker_compose", return_value=True)
+    @patch("scripts.setup._service.ServiceStep._wait_health", return_value=True)
+    def test_install_docker_starts_and_verifies(self, _mock_wait, _mock_start, _mock_mode):
+        step = self._make_step()
+        console = MagicMock()
+        assert step.install(console) is True
+
+    @patch("scripts.setup._service._get_deploy_mode", return_value="docker")
+    @patch("scripts.setup._service.ServiceStep._start_docker_compose", return_value=False)
+    def test_install_docker_start_failure(self, _mock_start, _mock_mode):
+        step = self._make_step()
+        console = MagicMock()
+        assert step.install(console) is False
+
 
 # ── VerifyStep ───────────────────────────────────────────────
 

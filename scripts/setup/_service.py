@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 import urllib.request
 import urllib.error
 import getpass
@@ -87,11 +88,19 @@ class ServiceStep:
         console.print()
 
         if deploy_mode == "docker":
-            console.print("  [bold]Start with Docker Compose:[/]")
-            console.print("    [bold]docker compose up -d[/]")
-            console.print()
+            console.print("  [bold]Starting/updating with Docker Compose (recommended):[/]")
+            ok = self._start_docker_compose(console)
+            if not ok:
+                return False
+            if self._wait_health(timeout_s=90):
+                console.print("  [green]RAG Service is healthy after Docker startup.[/]")
+                return True
+            console.print(
+                f"  [red]RAG Service is still unreachable at http://localhost:{port}/health[/]"
+            )
             console.print("  [dim]Check status: docker compose ps[/]")
             console.print("  [dim]View logs: docker compose logs -f rag[/]")
+            return False
         else:
             console.print("  [bold]Option 1: Foreground (development)[/]")
             console.print(f"    [bold]{START_SCRIPT}[/]")
@@ -122,3 +131,58 @@ class ServiceStep:
 
     def verify(self) -> bool:
         return self.check()
+
+    def _wait_health(self, timeout_s: int = 90) -> bool:
+        start = time.time()
+        while time.time() - start < timeout_s:
+            if self._health_ok():
+                return True
+            time.sleep(2)
+        return False
+
+    @staticmethod
+    def _start_docker_compose(console: Console) -> bool:
+        compose_file = _SERVICE_ROOT / "docker-compose.yml"
+        if not compose_file.exists():
+            console.print(
+                "  [red]docker-compose.yml not found.[/]\n"
+                "  Run the [bold]Config[/] step first to generate Docker files."
+            )
+            return False
+        if shutil.which("docker") is None:
+            console.print("  [red]docker is not installed or not in PATH.[/]")
+            return False
+
+        run_env = os.environ.copy()
+        run_env["RAG_PORT"] = _get_port()
+
+        cmd_base = ["docker", "compose"]
+        env_file = _SERVICE_ROOT / ".env"
+        if shutil.which("dotenvx") and env_file.exists():
+            cmd_base = ["dotenvx", "run", "-f", str(env_file), "--", "docker", "compose"]
+
+        console.print("  [cyan]Running docker compose up -d --build --force-recreate...[/]")
+        try:
+            result = subprocess.run(
+                [*cmd_base, "up", "-d", "--build", "--force-recreate"],
+                cwd=_SERVICE_ROOT,
+                env=run_env,
+                check=False,
+                text=True,
+            )
+        except OSError as exc:
+            console.print(f"  [red]Failed to start docker compose:[/] {exc}")
+            return False
+
+        if result.returncode == 0:
+            return True
+
+        console.print("  [yellow]Compose rebuild failed; retrying with plain up -d...[/]")
+        retry = subprocess.run(
+            [*cmd_base, "up", "-d"],
+            cwd=_SERVICE_ROOT,
+            env=run_env,
+            check=False,
+            text=True,
+        )
+        return retry.returncode == 0

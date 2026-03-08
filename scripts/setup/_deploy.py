@@ -15,18 +15,22 @@ class DeployStep:
         return get_env(ENV_VARS["deploy_mode"]) is not None
 
     def install(self, console: Console) -> bool:
+        console.print(
+            "  [green]Recommended default for most users: Docker deployment[/]"
+        )
         mode = questionary.select(
             "Deployment mode:",
             choices=[
                 questionary.Choice(
+                    "Docker — generate Dockerfile + docker-compose.yml (recommended)",
+                    value="docker",
+                ),
+                questionary.Choice(
                     "Host — install directly on this machine (systemd)",
                     value="host",
                 ),
-                questionary.Choice(
-                    "Docker — generate Dockerfile + docker-compose.yml",
-                    value="docker",
-                ),
             ],
+            default="docker",
         ).ask()
         if mode is None:
             return False

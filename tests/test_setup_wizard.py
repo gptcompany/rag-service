@@ -641,11 +641,12 @@ class TestConfigStep:
     @patch("scripts.setup._config.get_env", return_value=None)
     @patch("scripts.setup._config.set_env", return_value=True)
     @patch("scripts.setup._config.discover_ollama_models", return_value=[])
+    @patch("scripts.setup._config._port_in_use", return_value=False)
     @patch("questionary.select")
     @patch("questionary.text")
     @patch("questionary.confirm")
     def test_install_full_flow(
-        self, mock_confirm, mock_text, mock_select, mock_discover, mock_set, mock_get
+        self, mock_confirm, mock_text, mock_select, _mock_port_use, mock_discover, mock_set, mock_get
     ):
         from scripts.setup._config_presets import EMBEDDING_PRESETS
 
@@ -656,7 +657,7 @@ class TestConfigStep:
         mock_select.return_value.ask.side_effect = [
             "gpt-4o-mini",          # 1/6 OpenAI
             EMBEDDING_PRESETS[0],   # 3/6 Embedding (preset)
-            "mineru", "local",
+            "mineru", "custom",
         ]
         mock_text.return_value.ask.side_effect = [
             "qwen3:8b",  # 2/6 Ollama (custom fallback)
@@ -679,11 +680,12 @@ class TestConfigStep:
     @patch("scripts.setup._config.get_env", return_value=None)
     @patch("scripts.setup._config.set_env", return_value=True)
     @patch("scripts.setup._config.discover_ollama_models", return_value=[])
+    @patch("scripts.setup._config._port_in_use", return_value=False)
     @patch("questionary.select")
     @patch("questionary.text")
     @patch("questionary.confirm")
     def test_install_rejects_invalid_custom_embedding_dim(
-        self, mock_confirm, mock_text, mock_select, mock_discover, mock_set, mock_get
+        self, mock_confirm, mock_text, mock_select, _mock_port_use, mock_discover, mock_set, mock_get
     ):
         step = self._make_step()
         console = MagicMock()
@@ -706,11 +708,12 @@ class TestConfigStep:
     @patch("scripts.setup._config.get_env", return_value=None)
     @patch("scripts.setup._config.set_env", return_value=True)
     @patch("scripts.setup._config.discover_ollama_models", return_value=[])
+    @patch("scripts.setup._config._port_in_use", return_value=False)
     @patch("questionary.select")
     @patch("questionary.text")
     @patch("questionary.confirm")
     def test_install_rejects_invalid_port(
-        self, mock_confirm, mock_text, mock_select, mock_discover, mock_set, mock_get
+        self, mock_confirm, mock_text, mock_select, _mock_port_use, mock_discover, mock_set, mock_get
     ):
         from scripts.setup._config_presets import EMBEDDING_PRESETS
 
@@ -720,7 +723,7 @@ class TestConfigStep:
         mock_select.return_value.ask.side_effect = [
             "gpt-4o-mini",        # OpenAI
             EMBEDDING_PRESETS[0], # Embedding preset
-            "mineru", "local",
+            "mineru", "custom",
         ]
         mock_text.return_value.ask.side_effect = [
             "qwen3:8b",  # Ollama model

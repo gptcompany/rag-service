@@ -123,7 +123,7 @@ def run_interactive_menu(steps: list[SetupStep], console: Console) -> bool:
         if index is None:
             continue
 
-        if not _run_menu_step(steps[index], console, last_outcomes):
+        if not _run_menu_step(steps[index], console, last_outcomes, force_run=True):
             final_statuses = _collect_menu_statuses(steps, console, last_outcomes)
             console.print()
             _print_summary(
@@ -141,7 +141,13 @@ def run_interactive_menu(steps: list[SetupStep], console: Console) -> bool:
     return "failed" not in final_statuses
 
 
-def _run_menu_step(step: SetupStep, console: Console, last_outcomes: dict[str, str]) -> bool:
+def _run_menu_step(
+    step: SetupStep,
+    console: Console,
+    last_outcomes: dict[str, str],
+    *,
+    force_run: bool = False,
+) -> bool:
     """Run a single step selected from the menu."""
     skip_fn = getattr(step, "skip_when", None)
     if callable(skip_fn) and skip_fn():
@@ -152,10 +158,16 @@ def _run_menu_step(step: SetupStep, console: Console, last_outcomes: dict[str, s
         return True
 
     with console.status(f"[bold cyan]Checking {step.name}...[/]"):
-        if step.check():
+        already_ok = step.check()
+    if already_ok and not force_run:
             console.print(f"  [green]✅ {step.name}[/] — already configured")
             last_outcomes.pop(step.name, None)
             return True
+    if already_ok and force_run:
+        console.print(
+            f"  [green]✅ {step.name}[/] — already configured "
+            "[dim](re-running by user request)[/]"
+        )
 
     try:
         success = step.install(console)

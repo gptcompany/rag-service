@@ -349,6 +349,8 @@ class ConfigStep:
             ).ask():
                 console.print("  [yellow]Choose another port and retry.[/]")
                 return False
+        else:
+            console.print(f"  [green]Port {parsed_port} is free.[/]")
         config[ENV_VARS["port"]] = str(parsed_port)
         config[ENV_VARS["host"]] = "0.0.0.0"
 

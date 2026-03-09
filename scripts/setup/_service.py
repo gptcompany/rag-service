@@ -16,6 +16,12 @@ _SERVICE_ROOT = Path(__file__).resolve().parent.parent.parent
 START_SCRIPT = str(_SERVICE_ROOT / "scripts" / "raganything_start.sh")
 UPDATE_SYSTEMD_SCRIPT = str(_SERVICE_ROOT / "update-systemd.sh")
 SYSTEMD_UNIT = "raganything.service"
+_LEGACY_EDITABLE_LINE = "RUN pip install --no-cache-dir -e ./raganything"
+_ROBUST_EDITABLE_BLOCK = """RUN if [ -f ./raganything/pyproject.toml ] || [ -f ./raganything/setup.py ]; then \\
+      pip install --no-cache-dir -e ./raganything; \\
+    else \\
+      pip install --no-cache-dir "raganything @ https://github.com/gptcompany/raganything/archive/refs/heads/main.zip"; \\
+    fi"""
 
 
 def _get_port() -> str:
@@ -153,6 +159,8 @@ class ServiceStep:
             console.print("  [red]docker is not installed or not in PATH.[/]")
             return False
 
+        ServiceStep._migrate_legacy_dockerfile(console)
+
         run_env = os.environ.copy()
         run_env["RAG_PORT"] = _get_port()
 
@@ -186,3 +194,25 @@ class ServiceStep:
             text=True,
         )
         return retry.returncode == 0
+
+    @staticmethod
+    def _migrate_legacy_dockerfile(console: Console) -> None:
+        dockerfile = _SERVICE_ROOT / "Dockerfile"
+        if not dockerfile.exists():
+            return
+        try:
+            text = dockerfile.read_text()
+        except OSError:
+            return
+        if _LEGACY_EDITABLE_LINE not in text:
+            return
+        if "raganything @ https://github.com/gptcompany/raganything" in text:
+            return
+        updated = text.replace(_LEGACY_EDITABLE_LINE, _ROBUST_EDITABLE_BLOCK)
+        try:
+            dockerfile.write_text(updated)
+            console.print(
+                "  [cyan]Updated legacy Dockerfile install step for raganything fallback.[/]"
+            )
+        except OSError:
+            return

@@ -4,6 +4,7 @@ from __future__ import annotations
 import platform
 import shutil
 import subprocess
+import time
 import urllib.request
 import urllib.error
 from urllib.parse import urlparse
@@ -109,6 +110,34 @@ class OllamaStep:
             return False
         return False
 
+    def _try_start_local_ollama(self, console: Console) -> bool:
+        try:
+            should_start = questionary.confirm(
+                "Ollama is installed but not running. Try to start it now?",
+                default=True,
+            ).ask()
+        except EOFError:
+            should_start = False
+        if not should_start:
+            return False
+
+        try:
+            subprocess.Popen(
+                ["ollama", "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception:
+            return False
+
+        for _ in range(15):
+            if self._ollama_serving():
+                console.print("  [green]Ollama started successfully.[/]")
+                return True
+            time.sleep(1)
+        return False
+
     def check(self) -> bool:
         if self._is_local_endpoint():
             return self._ollama_installed() and self._ollama_serving() and self._model_exists()
@@ -128,14 +157,16 @@ class OllamaStep:
 
         if not self._ollama_serving():
             if local_endpoint:
-                console.print("  [yellow]Ollama is installed but not serving.[/]")
-                console.print("  Start it with:")
-                console.print("    [bold]ollama serve[/]")
-                console.print("  (or enable the systemd service: systemctl --user start ollama)")
+                if not self._try_start_local_ollama(console):
+                    console.print("  [yellow]Ollama is installed but not serving.[/]")
+                    console.print("  Start it with:")
+                    console.print("    [bold]ollama serve[/]")
+                    console.print("  (or enable the systemd service: systemctl --user start ollama)")
+                    return False
             else:
                 console.print(f"  [yellow]Remote Ollama endpoint not reachable:[/] {ollama_url}")
                 console.print("  Verify OLLAMA_HOST and network reachability.")
-            return False
+                return False
 
         if not self._model_exists():
             if local_endpoint:

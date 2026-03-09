@@ -33,6 +33,12 @@ python3 -m scripts.setup
 
 If the CLI was installed into the project venv without activating it, use `.venv/bin/rag-setup`.
 
+Wizard notes:
+- In Docker mode, host-only dependency steps are marked as "Handled by selected mode" (expected behavior).
+- You can re-run any step manually even when it is already `OK`.
+- `Service configuration` now supports custom Ollama endpoint URL (default `http://localhost:11434`), custom/free port selection, and pre-checks for port conflicts.
+- In local mode, the Ollama step can attempt automatic installation if Ollama is missing.
+
 ## Performance (CPU / MinerU)
 
 The service now includes plug-and-play CPU auto-tuning for MinerU workloads:

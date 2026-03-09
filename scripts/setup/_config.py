@@ -36,7 +36,11 @@ RUN curl -fsS https://dotenvx.sh | sh
 
 WORKDIR /app
 COPY . .
-RUN pip install --no-cache-dir -e ./raganything
+RUN if [ -f ./raganything/pyproject.toml ] || [ -f ./raganything/setup.py ]; then \\
+      pip install --no-cache-dir -e ./raganything; \\
+    else \\
+      pip install --no-cache-dir "raganything @ https://github.com/gptcompany/raganything/archive/refs/heads/main.zip"; \\
+    fi
 
 # Models NOT included — mount ~/.cache/huggingface as volume
 EXPOSE 8767
@@ -57,7 +61,7 @@ services:
       - huggingface_cache:/root/.cache/huggingface
       - ./data:/app/data
     environment:
-      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - OLLAMA_HOST=${RAG_OLLAMA_HOST:-http://host.docker.internal:11434}
 
 volumes:
   huggingface_cache:
@@ -133,6 +137,13 @@ def _looks_like_rag_on_port(port: int) -> bool:
         return False
 
 
+def _find_free_port(start: int = 8767, end: int = 65535) -> int | None:
+    for port in range(start, end + 1):
+        if not _port_in_use(port):
+            return port
+    return None
+
+
 class ConfigStep:
     name = "Service configuration"
     description = "Configure models, parser, host/port, and runtime options"
@@ -141,6 +152,7 @@ class ConfigStep:
         required_keys = (
             "openai_model",
             "ollama_model",
+            "ollama_host",
             "embedding_model",
             "embedding_dim",
             "default_parser",
@@ -180,7 +192,24 @@ class ConfigStep:
 
         # 2/6 Ollama model (auto-discovery)
         console.print("\n  [bold cyan]2/6[/] Ollama model (local LLM)")
-        ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        deploy_mode = get_env(ENV_VARS["deploy_mode"]) or "host"
+        ollama_mode = get_env(ENV_VARS["ollama_mode"]) or "external"
+        current_ollama_host = (
+            get_env(ENV_VARS["ollama_host"])
+            or os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        )
+        if deploy_mode == "docker" and ollama_mode == "sidecar":
+            current_ollama_host = "http://ollama:11434"
+        ollama_host = questionary.text(
+            "Ollama endpoint URL:",
+            default=current_ollama_host,
+        ).ask()
+        if not ollama_host:
+            return False
+        ollama_host = ollama_host.strip().rstrip("/")
+        if not ollama_host.startswith(("http://", "https://")):
+            console.print("  [red]Invalid Ollama URL. Must start with http:// or https://[/]")
+            return False
         models = discover_ollama_models(ollama_host)
         if models:
             ollama_choice = questionary.select(
@@ -200,6 +229,7 @@ class ConfigStep:
             if not ollama_choice:
                 return False
         config[ENV_VARS["ollama_model"]] = ollama_choice
+        config[ENV_VARS["ollama_host"]] = ollama_host
 
         # 3/6 Embedding model
         console.print("\n  [bold cyan]3/6[/] Embedding model")
@@ -279,6 +309,7 @@ class ConfigStep:
             choices=[
                 questionary.Choice("Use default port (8767)", value="default"),
                 questionary.Choice("Use custom port", value="custom"),
+                questionary.Choice("Auto-pick first free port", value="auto"),
             ],
             default="custom" if current_port != "8767" else "default",
         ).ask()
@@ -287,7 +318,7 @@ class ConfigStep:
 
         if port_mode == "default":
             parsed_port = 8767
-        else:
+        elif port_mode == "custom":
             port = questionary.text(
                 "Enter custom service port (1-65535):",
                 default=current_port,
@@ -295,6 +326,12 @@ class ConfigStep:
             if port is None:
                 return False
             parsed_port = _parse_positive_int(port, min_value=1, max_value=65535)
+        else:
+            parsed_port = _find_free_port(start=8767)
+            if parsed_port is None:
+                console.print("  [red]Could not auto-find a free TCP port.[/]")
+                return False
+            console.print(f"  [green]Selected free port: {parsed_port}[/]")
         if parsed_port is None:
             console.print("  [red]Invalid port (must be an integer between 1 and 65535).[/]")
             return False

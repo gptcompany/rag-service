@@ -41,8 +41,8 @@ def test_set_env_success():
 def test_config_step_check():
     step = ConfigStep()
     with patch("scripts.setup._config.get_env") as mock_get:
-        # check() calls get_env for 7 required keys + port + dim = 9 calls
-        mock_get.side_effect = ["val"] * 7 + ["8767", "1024"]
+        # check() calls get_env for 8 required keys + port + dim
+        mock_get.side_effect = ["val"] * 8 + ["8767", "1024"]
         assert step.check() is True
 
 
@@ -66,6 +66,7 @@ def test_config_step_install_custom(tmp_path):
         ]
         mock_text.return_value.ask.side_effect = [
             "custom-llm",   # OpenAI text
+            "http://localhost:11434",  # Ollama endpoint URL
             "custom-ollama",# Ollama text
             "hf/embed",     # Embed model
             "512",          # Embed dim

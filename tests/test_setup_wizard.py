@@ -194,7 +194,10 @@ class TestOllamaStep:
             mock_run.return_value = MagicMock(returncode=0)
             result = step.install(console)
             assert result is True
-            mock_run.assert_called_once()
+            assert any(
+                call.args and call.args[0][:2] == ["ollama", "pull"]
+                for call in mock_run.call_args_list
+            )
 
 
 # ── LibreOfficeStep ──────────────────────────────────────────
@@ -660,6 +663,7 @@ class TestConfigStep:
             "mineru", "custom",
         ]
         mock_text.return_value.ask.side_effect = [
+            "http://localhost:11434",  # Ollama endpoint URL
             "qwen3:8b",  # 2/6 Ollama (custom fallback)
             "8767",       # 6/6 Port
         ]
@@ -695,6 +699,7 @@ class TestConfigStep:
             "custom",       # Embedding choice
         ]
         mock_text.return_value.ask.side_effect = [
+            "http://localhost:11434",  # Ollama endpoint URL
             "qwen3:8b",                 # Ollama model
             "BAAI/bge-large-en-v1.5",   # Embedding model
             "abc",                      # Invalid embedding dim
@@ -726,6 +731,7 @@ class TestConfigStep:
             "mineru", "custom",
         ]
         mock_text.return_value.ask.side_effect = [
+            "http://localhost:11434",  # Ollama endpoint URL
             "qwen3:8b",  # Ollama model
             "70000",     # Invalid port
         ]

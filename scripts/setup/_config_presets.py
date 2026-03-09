@@ -23,6 +23,7 @@ ENV_VARS = {
     "enable_vision": "RAG_ENABLE_VISION",
     "deploy_mode": "RAG_DEPLOY_MODE",
     "ollama_mode": "RAG_OLLAMA_MODE",
+    "ollama_host": "RAG_OLLAMA_HOST",
 }
 
 _SERVICE_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -58,8 +59,9 @@ def get_env(key: str) -> str | None:
             text=True,
             timeout=10,
         )
-        value = result.stdout.strip()
-        if result.returncode == 0 and value:
+        raw = result.stdout
+        value = raw.strip() if isinstance(raw, str) else ""
+        if result.returncode == 0 and isinstance(value, str) and value:
             return value
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass

@@ -295,7 +295,7 @@ def _menu_status_label(status: str) -> str:
         "pending": "⬜ Pending",
         "failed": "❌ Failed",
         "warn": "⚠️ Warning",
-        "not-needed": "⏭️ Skipped (mode)",
+        "not-needed": "⏭️ Handled by selected mode",
     }.get(status, status)
 
 

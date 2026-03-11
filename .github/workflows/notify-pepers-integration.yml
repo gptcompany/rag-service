@@ -19,9 +19,11 @@ jobs:
     runs-on: [self-hosted, Linux, X64, muletto]
     steps:
       - name: Repository dispatch to pepers
+        id: pepers_dispatch
         env:
           DISPATCH_TOKEN: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN || secrets.PAT }}
         if: env.DISPATCH_TOKEN != ''
+        continue-on-error: true
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN || secrets.PAT }}
@@ -29,6 +31,12 @@ jobs:
           event-type: rag-service-update
           client-payload: >-
             {"source_repo":"${{ github.repository }}","source_ref":"${{ github.ref_name }}","source_sha":"${{ github.sha }}","source_workflow":"${{ github.workflow }}"}
+
+      - name: Pepers dispatch warning
+        if: steps.pepers_dispatch.outcome == 'failure'
+        run: |
+          echo "::warning::pepers repository_dispatch failed. Check PEPERS_REPO_DISPATCH_TOKEN or PAT validity/scope."
+          echo "pepers repository_dispatch failed. Check PEPERS_REPO_DISPATCH_TOKEN or PAT validity/scope." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Repository dispatch to progressive-deploy
         env:

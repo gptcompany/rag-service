@@ -54,9 +54,20 @@ class _StubJobQueue:
         self.submissions: list[_SubmittedJob] = []
         self.job_history = []
         self.webhook_calls: list[object] = []
+        self.can_accept_value = True
+        self.duplicate_job = None
 
     def can_accept(self) -> bool:
-        return True
+        return self.can_accept_value
+
+    def find_active_duplicate(self, _paper_id: str, _pdf_path: str):
+        return self.duplicate_job
+
+    def attach_webhook_if_missing(self, job, webhook_url, resolved_webhook_ip):
+        if webhook_url and not getattr(job, "webhook_url", None):
+            job.webhook_url = webhook_url
+        if resolved_webhook_ip and not getattr(job, "resolved_webhook_ip", None):
+            job.resolved_webhook_ip = resolved_webhook_ip
 
     def submit_job(
         self,
@@ -283,6 +294,61 @@ def test_process_cached_result_uses_webhook_helper_with_pinned_ip(rag_api_server
     assert webhook_job.webhook_url == "https://example.com/callback"
     assert webhook_job.resolved_webhook_ip == "93.184.216.34"
     assert webhook_job.result["cached"] is True
+
+
+def test_process_cached_result_bypasses_capacity_check(rag_api_server):
+    paper_id = "arxiv:2401.12345"
+    safe_id = re.sub(r"[^a-zA-Z0-9._-]", "_", paper_id.replace("arxiv:", ""))
+    cached_dir = rag_api_server["pdf_root"].parent / "output" / safe_id
+    cached_dir.mkdir(parents=True, exist_ok=True)
+    (cached_dir / "result.md").write_text("# cached")
+
+    rag_api_server["job_queue"].can_accept_value = False
+
+    pdf = rag_api_server["pdf_root"] / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+
+    status, data = _http_json_request(
+        rag_api_server["port"],
+        "POST",
+        "/process",
+        payload={"pdf_path": str(pdf), "paper_id": paper_id},
+        headers={"X-API-Key": "test-api-key"},
+    )
+
+    assert status == 200
+    assert data["cached"] is True
+
+
+def test_process_returns_existing_job_for_duplicate_active_submission(rag_api_server):
+    pdf = rag_api_server["pdf_root"] / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    rag_api_server["job_queue"].can_accept_value = False
+    rag_api_server["job_queue"].duplicate_job = SimpleNamespace(
+        job_id="dup12345",
+        paper_id="arxiv:2401.12345",
+        status=SimpleNamespace(value="queued"),
+        webhook_url=None,
+        resolved_webhook_ip=None,
+    )
+
+    status, data = _http_json_request(
+        rag_api_server["port"],
+        "POST",
+        "/process",
+        payload={
+            "pdf_path": str(pdf),
+            "paper_id": "arxiv:2401.12345",
+            "webhook_url": "https://example.com/callback",
+        },
+        headers={"X-API-Key": "test-api-key"},
+    )
+
+    assert status == 202
+    assert data["success"] is True
+    assert data["duplicate"] is True
+    assert data["job_id"] == "dup12345"
+    assert rag_api_server["job_queue"].duplicate_job.webhook_url == "https://example.com/callback"
 
 
 def test_query_endpoint_requires_api_key_when_enabled(rag_api_server):

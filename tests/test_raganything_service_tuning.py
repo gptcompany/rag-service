@@ -15,7 +15,7 @@ def test_auto_max_concurrent_jobs_is_conservative_for_cpu_heavy_workloads():
 
 
 def test_auto_queue_depth_scales_with_workers():
-    assert svc._auto_queue_depth(1) == 4
+    assert svc._auto_queue_depth(1) == 8
     assert svc._auto_queue_depth(2) == 8
     assert svc._auto_queue_depth(5) == 16  # capped
 
@@ -78,7 +78,7 @@ def test_resolve_runtime_queue_tuning_invalid_env_falls_back_to_auto(monkeypatch
 
     assert tuning["max_concurrent_jobs"] == 1
     assert tuning["max_concurrent_jobs_source"] == "auto:cpu-discovery"
-    assert tuning["max_queue_depth"] == 4
+    assert tuning["max_queue_depth"] == 8
     assert tuning["max_queue_depth_source"] == "auto:4x-workers"
     assert "WARNING" in captured.out
 

@@ -67,6 +67,21 @@ def test_job_queue_acceptance():
         with patch.object(queue, "get_active_count", return_value=2):
             assert queue.can_accept() is False
 
+
+def test_job_queue_find_active_duplicate():
+    queue = AsyncJobQueue(max_workers=1)
+    job = Job(job_id="job-a", paper_id="paper-1", pdf_path="/tmp/paper-1.pdf")
+    duplicate = Job(job_id="job-b", paper_id="paper-2", pdf_path="/tmp/paper-2.pdf")
+    duplicate.status = JobStatus.FAILED
+
+    with queue.lock:
+        queue.jobs[job.job_id] = job
+        queue.jobs[duplicate.job_id] = duplicate
+
+    found = queue.find_active_duplicate("paper-1", "/tmp/paper-1.pdf")
+    assert found is job
+    assert queue.find_active_duplicate("paper-2", "/tmp/paper-2.pdf") is None
+
 @patch("scripts.raganything_service.run_in_shared_loop")
 def test_job_queue_process_flow(mock_run_loop):
     # Mock loop to return success

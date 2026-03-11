@@ -155,7 +155,7 @@ def _auto_max_concurrent_jobs(effective_cpu_count: int) -> int:
 
 def _auto_queue_depth(max_concurrent_jobs: int) -> int:
     """Keep queue finite but useful for non-technical users."""
-    return min(16, max(4, max_concurrent_jobs * 4))
+    return min(16, max(8, max_concurrent_jobs * 4))
 
 
 def _auto_cpu_threads(effective_cpu_count: int, max_concurrent_jobs: int) -> int:
@@ -947,6 +947,31 @@ class AsyncJobQueue:
         """Check if queue can accept more jobs."""
         return self.get_active_count() < (self.max_workers + MAX_QUEUE_DEPTH)
 
+    def find_active_duplicate(self, paper_id: str, pdf_path: str) -> Optional[Job]:
+        """Return a queued/processing job for the same paper/pdf pair, if any."""
+        with self.lock:
+            for job in self.jobs.values():
+                if job.status not in (JobStatus.QUEUED, JobStatus.PROCESSING):
+                    continue
+                if job.paper_id == paper_id and job.pdf_path == pdf_path:
+                    return job
+        return None
+
+    def attach_webhook_if_missing(
+        self,
+        job: Job,
+        webhook_url: Optional[str],
+        resolved_webhook_ip: Optional[str],
+    ) -> None:
+        """Attach callback info to an existing job without replacing it."""
+        if not webhook_url:
+            return
+        with self.lock:
+            if not job.webhook_url:
+                job.webhook_url = webhook_url
+            if not job.resolved_webhook_ip:
+                job.resolved_webhook_ip = resolved_webhook_ip
+
     def _process_job(self, job: Job):
         """Process job in background thread."""
         try:
@@ -1490,18 +1515,6 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            # Capacity check
-            if not job_queue.can_accept():
-                self.send_json(
-                    429,
-                    {
-                        "success": False,
-                        "error": f"Too many jobs queued (max {MAX_CONCURRENT_JOBS + MAX_QUEUE_DEPTH})",
-                        "retry_after": 300,
-                    },
-                )
-                return
-
             data = self.read_json_body()
             pdf_path = data.get("pdf_path", "")
             paper_id = data.get("paper_id", "")
@@ -1579,6 +1592,41 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
                     return
 
             pdf_path = sanitize_pdf_path(pdf_path)
+
+            # Active-job dedupe should bypass queue pressure so repeated
+            # submissions from upstream services do not clog the queue.
+            if not force_reprocess:
+                existing_job = job_queue.find_active_duplicate(paper_id, pdf_path)
+                if existing_job is not None:
+                    job_queue.attach_webhook_if_missing(
+                        existing_job, webhook_url, resolved_webhook_ip
+                    )
+                    self.send_json(
+                        202,
+                        {
+                            "success": True,
+                            "duplicate": True,
+                            "message": "Job already queued or processing",
+                            "job_id": existing_job.job_id,
+                            "paper_id": existing_job.paper_id,
+                            "status": existing_job.status.value,
+                            "poll_url": f"/jobs/{existing_job.job_id}",
+                            "webhook_configured": existing_job.webhook_url is not None,
+                        },
+                    )
+                    return
+
+            # Capacity check should run only after cached/duplicate short-circuits.
+            if not job_queue.can_accept():
+                self.send_json(
+                    429,
+                    {
+                        "success": False,
+                        "error": f"Too many jobs queued (max {MAX_CONCURRENT_JOBS + MAX_QUEUE_DEPTH})",
+                        "retry_after": 300,
+                    },
+                )
+                return
 
             # Submit job (returns immediately)
             job = job_queue.submit_job(paper_id, pdf_path, webhook_url, resolved_webhook_ip, force_parser, force_reprocess)

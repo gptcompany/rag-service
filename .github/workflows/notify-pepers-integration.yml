@@ -16,23 +16,42 @@ permissions:
 jobs:
   notify:
     if: github.repository_owner == 'gptcompany'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, muletto]
     steps:
       - name: Repository dispatch to pepers
         env:
-          DISPATCH_TOKEN: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN }}
+          DISPATCH_TOKEN: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN || secrets.PAT }}
         if: env.DISPATCH_TOKEN != ''
         uses: peter-evans/repository-dispatch@v3
         with:
-          token: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN }}
+          token: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN || secrets.PAT }}
           repository: gptcompany/pepers
           event-type: rag-service-update
           client-payload: >-
             {"source_repo":"${{ github.repository }}","source_ref":"${{ github.ref_name }}","source_sha":"${{ github.sha }}","source_workflow":"${{ github.workflow }}"}
 
-      - name: Missing token notice
+      - name: Repository dispatch to progressive-deploy
         env:
-          DISPATCH_TOKEN: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN }}
+          DISPATCH_TOKEN: ${{ secrets.PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN || secrets.PAT }}
+        if: env.DISPATCH_TOKEN != ''
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN || secrets.PAT }}
+          repository: gptcompany/progressive-deploy
+          event-type: rag-service-build
+          client-payload: >-
+            {"source_repo":"${{ github.repository }}","source_ref":"${{ github.ref_name }}","source_sha":"${{ github.sha }}","source_workflow":"${{ github.workflow }}","ref":"${{ github.sha }}"}
+
+      - name: Missing token notice for pepers
+        env:
+          DISPATCH_TOKEN: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN || secrets.PAT }}
         if: env.DISPATCH_TOKEN == ''
         run: |
-          echo "PEPERS_REPO_DISPATCH_TOKEN is not configured; skipping repository_dispatch." >> "$GITHUB_STEP_SUMMARY"
+          echo "No dispatch token configured (expected PEPERS_REPO_DISPATCH_TOKEN or PAT); skipping pepers repository_dispatch." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Missing token notice for progressive-deploy
+        env:
+          DISPATCH_TOKEN: ${{ secrets.PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN || secrets.PAT }}
+        if: env.DISPATCH_TOKEN == ''
+        run: |
+          echo "No dispatch token configured (expected PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN or PAT); skipping progressive-deploy repository_dispatch." >> "$GITHUB_STEP_SUMMARY"

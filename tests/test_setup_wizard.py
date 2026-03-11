@@ -51,10 +51,10 @@ class TestPythonStep:
         step = self._make_step()
         console = MagicMock()
         mock_venv_dir.__truediv__.return_value.__truediv__.return_value.exists.return_value = False
-        with patch("subprocess.run") as mock_run:
+        with patch.object(step, "_find_uv", return_value="/usr/bin/uv"), patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             assert step.install(console) is True
-            # Should call venv creation, pip install -e, and pip install deps
+            # uv path exercises the three expected subprocess calls deterministically.
             assert mock_run.call_count == 3
 
     @patch("scripts.setup._python.VENV_DIR")
@@ -161,13 +161,17 @@ class TestOllamaStep:
     def test_model_exists(self, mock_run):
         mock_run.return_value = MagicMock(stdout="qwen3:8b\t4.7GB", returncode=0)
         step = self._make_step()
-        assert step._model_exists() is True
+        with patch.object(step, "_is_local_endpoint", return_value=True), \
+             patch.object(step, "_ollama_installed", return_value=True):
+            assert step._model_exists() is True
 
     @patch("subprocess.run")
     def test_model_missing(self, mock_run):
         mock_run.return_value = MagicMock(stdout="llama3:latest", returncode=0)
         step = self._make_step()
-        assert step._model_exists() is False
+        with patch.object(step, "_is_local_endpoint", return_value=True), \
+             patch.object(step, "_ollama_installed", return_value=True):
+            assert step._model_exists() is False
 
     @patch("shutil.which", return_value=None)
     def test_install_not_installed(self, _):

@@ -25,13 +25,8 @@ concurrency:
 
 jobs:
   test:
-    name: "${{ matrix.os }} / py${{ matrix.python-version }}"
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        python-version: ["3.11"]
+    name: self-hosted / py3.11
+    runs-on: [self-hosted, Linux, X64, muletto]
 
     steps:
       - name: Checkout
@@ -40,7 +35,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
 
       - name: Install test/runtime dependencies
         run: |
@@ -53,20 +48,20 @@ jobs:
       - name: Setup wizard tests
         run: pytest -q tests/test_setup_wizard.py
 
-      - name: Extended lightweight suite (Linux only)
-        if: runner.os == 'Linux'
+      - name: Extended lightweight suite
         run: |
           pytest tests/test_raganything_service_api.py tests/test_raganything_service_security.py tests/test_setup_wizard.py --cov=scripts --cov-report=term --cov-report=json
 
       - name: Extract coverage percentage
-        if: runner.os == 'Linux'
         id: cov
         run: |
           COV=$(python -c "import json; print(int(json.load(open('coverage.json'))['totals']['percent_covered']))")
           echo "pct=$COV" >> "$GITHUB_OUTPUT"
 
       - name: Update coverage badge
-        if: runner.os == 'Linux' && github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.cov.outputs.pct
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.cov.outputs.pct
+        id: coverage_badge
+        continue-on-error: true
         uses: schneegans/dynamic-badges-action@v1.7.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
@@ -77,3 +72,9 @@ jobs:
           valColorRange: ${{ steps.cov.outputs.pct }}
           minColorRange: 40
           maxColorRange: 90
+
+      - name: Coverage badge warning
+        if: steps.coverage_badge.outcome == 'failure'
+        run: |
+          echo "::warning::Coverage badge update failed. Check GIST_TOKEN validity/scope and gist access for ac39e6516b7114f96b84ba445b8e7a83."
+          echo "Coverage badge update failed. Check GIST_TOKEN validity/scope and gist access for ac39e6516b7114f96b84ba445b8e7a83." >> "$GITHUB_STEP_SUMMARY"

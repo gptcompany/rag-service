@@ -39,8 +39,17 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-# Add raganything to path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "raganything"))
+# Prefer the installed raganything package by default. The local checkout can be
+# re-enabled explicitly for development, but forcing it in production caused the
+# service to diverge from the venv-tested package behavior.
+_USE_LOCAL_RAGANYTHING = os.getenv("RAGANYTHING_LOCAL_SOURCE", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+if _USE_LOCAL_RAGANYTHING:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "raganything"))
 
 
 def _read_text_file(path: str) -> Optional[str]:

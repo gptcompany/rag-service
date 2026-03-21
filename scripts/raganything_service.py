@@ -1074,6 +1074,7 @@ class AsyncJobQueue:
             last_error = None
             for parser in parsers_to_try:
                 try:
+                    selected_parser = parser
                     rag.config.parser = parser
                     print(f"[JobQueue] Trying parser: {parser} for {job.paper_id}")
 
@@ -1085,7 +1086,6 @@ class AsyncJobQueue:
                         ),
                         timeout=PROCESS_TIMEOUT,
                     )
-                    selected_parser = parser  # Update to actual parser used
                     break  # Success, exit loop
                 except Exception as e:
                     last_error = e
@@ -1097,10 +1097,8 @@ class AsyncJobQueue:
                 raise last_error
 
             # Find generated markdown
-            markdown_length = 0
-            for f in Path(output_dir).rglob("*.md"):
-                markdown_length += f.stat().st_size
-                break
+            md_files = list(Path(output_dir).rglob("*.md"))
+            markdown_length = sum(f.stat().st_size for f in md_files)
 
             # Convert path for container
             if _HOST_PATH_PREFIX:
@@ -1123,6 +1121,42 @@ class AsyncJobQueue:
             }
 
         except asyncio.TimeoutError:
+            salvage_files = []
+            if "output_dir" in locals():
+                started_at = None
+                if job.started_at:
+                    try:
+                        started_at = datetime.fromisoformat(job.started_at)
+                    except ValueError:
+                        started_at = None
+                for candidate in Path(output_dir).rglob("*.md"):
+                    try:
+                        modified_at = datetime.fromtimestamp(candidate.stat().st_mtime)
+                    except OSError:
+                        continue
+                    if started_at is None or modified_at >= started_at:
+                        salvage_files.append(candidate)
+
+            if salvage_files:
+                markdown_length = sum(f.stat().st_size for f in salvage_files)
+                if _HOST_PATH_PREFIX:
+                    output_dir_container = output_dir.replace(_HOST_PATH_PREFIX, _CONTAINER_PATH_PREFIX)
+                else:
+                    output_dir_container = output_dir
+                print(
+                    f"[JobQueue] Salvaged timed-out job {job.job_id}: "
+                    f"{len(salvage_files)} fresh markdown file(s) already present for {job.paper_id}"
+                )
+                return {
+                    "success": True,
+                    "indexed": False,
+                    "salvaged": True,
+                    "output_dir": output_dir_container,
+                    "markdown_length": markdown_length,
+                    "entities_extracted": False,
+                    "parser": selected_parser,
+                    "warning": f"Processing timeout ({PROCESS_TIMEOUT}s) after markdown generation",
+                }
             return {
                 "success": False,
                 "error": f"Processing timeout ({PROCESS_TIMEOUT}s)",

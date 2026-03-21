@@ -10,6 +10,12 @@ on:
       - "raganything/**"
       - "pyproject.toml"
   workflow_dispatch:
+    inputs:
+      force_progressive_dispatch:
+        description: Force progressive-deploy dispatch even if rag-service has active jobs
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -39,10 +45,39 @@ jobs:
           echo "::warning::pepers repository_dispatch failed. Check PEPERS_REPO_DISPATCH_TOKEN or PAT validity/scope."
           echo "pepers repository_dispatch failed. Check PEPERS_REPO_DISPATCH_TOKEN or PAT validity/scope." >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Check rag-service activity
+        id: activity
+        env:
+          RAG_HEALTH_URL: ${{ vars.RAG_SERVICE_HEALTH_URL }}
+        run: |
+          HEALTH_URL="${RAG_HEALTH_URL:-http://127.0.0.1:8767/health}"
+          echo "health_url=${HEALTH_URL}" >> "$GITHUB_OUTPUT"
+          if ! payload=$(curl -fsS "$HEALTH_URL"); then
+            echo "dispatch_allowed=false" >> "$GITHUB_OUTPUT"
+            echo "active_jobs=unknown" >> "$GITHUB_OUTPUT"
+            echo "::warning::rag-service health check failed at ${HEALTH_URL}; skipping progressive-deploy dispatch by default."
+            echo "rag-service health check failed at ${HEALTH_URL}; skipping progressive-deploy dispatch by default." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          active_jobs=$(printf '%s' "$payload" | jq -r '.jobs.active_jobs // "unknown"')
+          echo "active_jobs=${active_jobs}" >> "$GITHUB_OUTPUT"
+
+          if [ "$active_jobs" = "0" ]; then
+            echo "dispatch_allowed=true" >> "$GITHUB_OUTPUT"
+            echo "rag-service active_jobs=0; progressive-deploy dispatch allowed." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "dispatch_allowed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::rag-service active_jobs=${active_jobs}; skipping progressive-deploy dispatch to avoid interrupting in-flight work."
+            echo "rag-service active_jobs=${active_jobs}; skipping progressive-deploy dispatch to avoid interrupting in-flight work." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Repository dispatch to progressive-deploy
+        id: progressive_dispatch
         env:
           DISPATCH_TOKEN: ${{ secrets.PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN || secrets.PAT }}
-        if: env.DISPATCH_TOKEN != ''
+        if: env.DISPATCH_TOKEN != '' && (steps.activity.outputs.dispatch_allowed == 'true' || inputs.force_progressive_dispatch == true)
+        continue-on-error: true
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN || secrets.PAT }}
@@ -50,6 +85,12 @@ jobs:
           event-type: rag-service-build
           client-payload: >-
             {"source_repo":"${{ github.repository }}","source_ref":"${{ github.ref_name }}","source_sha":"${{ github.sha }}","source_workflow":"${{ github.workflow }}","ref":"${{ github.sha }}"}
+
+      - name: Progressive-deploy dispatch warning
+        if: steps.progressive_dispatch.outcome == 'failure'
+        run: |
+          echo "::warning::progressive-deploy repository_dispatch failed. Check PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN or PAT validity/scope."
+          echo "progressive-deploy repository_dispatch failed. Check PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN or PAT validity/scope." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Missing token notice for pepers
         env:
@@ -64,3 +105,18 @@ jobs:
         if: env.DISPATCH_TOKEN == ''
         run: |
           echo "No dispatch token configured (expected PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN or PAT); skipping progressive-deploy repository_dispatch." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Progressive-deploy skip notice
+        if: env.DISPATCH_TOKEN != '' && steps.activity.outputs.dispatch_allowed != 'true' && inputs.force_progressive_dispatch != true
+        env:
+          DISPATCH_TOKEN: ${{ secrets.PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN || secrets.PAT }}
+        run: |
+          echo "progressive-deploy dispatch skipped because rag-service is busy or unreachable." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Progressive-deploy force notice
+        if: env.DISPATCH_TOKEN != '' && steps.activity.outputs.dispatch_allowed != 'true' && inputs.force_progressive_dispatch == true
+        env:
+          DISPATCH_TOKEN: ${{ secrets.PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN || secrets.PAT }}
+        run: |
+          echo "::warning::force_progressive_dispatch=true bypassed the rag-service activity gate."
+          echo "force_progressive_dispatch=true bypassed the rag-service activity gate." >> "$GITHUB_STEP_SUMMARY"

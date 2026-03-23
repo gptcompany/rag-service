@@ -23,17 +23,47 @@ permissions:
 jobs:
   notify:
     if: github.repository_owner == 'gptcompany'
-    runs-on: [self-hosted, Linux, X64, muletto]
+    runs-on: [self-hosted, Linux, X64, sam-workstation]
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve dispatch tokens via dotenvx (self-hosted fallback)
+        id: tokens
+        run: |
+          PEPERS_TOKEN="${{ secrets.PEPERS_REPO_DISPATCH_TOKEN || secrets.PAT }}"
+          PD_TOKEN="${{ secrets.PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN || secrets.PAT }}"
+          
+          if command -v dotenvx &> /dev/null && [[ -f .env ]]; then
+            # If GitHub secrets are missing, try local dotenvx fallback on sam-workstation
+            if [[ -z "$PEPERS_TOKEN" ]]; then
+              echo "Resolving PEPERS_REPO_DISPATCH_TOKEN via dotenvx..."
+              PEPERS_TOKEN=$(dotenvx get PEPERS_REPO_DISPATCH_TOKEN || dotenvx get GITHUB_PAT || dotenvx get PAT || true)
+            fi
+            if [[ -z "$PD_TOKEN" ]]; then
+              echo "Resolving PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN via dotenvx..."
+              PD_TOKEN=$(dotenvx get PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN || dotenvx get GITHUB_PAT || dotenvx get PAT || true)
+            fi
+          fi
+
+          if [[ -n "$PEPERS_TOKEN" ]]; then
+            echo "pepers_token=$PEPERS_TOKEN" >> "$GITHUB_OUTPUT"
+            echo "::add-mask::$PEPERS_TOKEN"
+          fi
+          if [[ -n "$PD_TOKEN" ]]; then
+            echo "pd_token=$PD_TOKEN" >> "$GITHUB_OUTPUT"
+            echo "::add-mask::$PD_TOKEN"
+          fi
+
       - name: Repository dispatch to pepers
         id: pepers_dispatch
         env:
-          DISPATCH_TOKEN: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN || secrets.PAT }}
+          DISPATCH_TOKEN: ${{ steps.tokens.outputs.pepers_token }}
         if: env.DISPATCH_TOKEN != ''
         continue-on-error: true
         uses: peter-evans/repository-dispatch@v3
         with:
-          token: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN || secrets.PAT }}
+          token: ${{ steps.tokens.outputs.pepers_token }}
           repository: gptcompany/pepers
           event-type: rag-service-update
           client-payload: >-
@@ -75,12 +105,12 @@ jobs:
       - name: Repository dispatch to progressive-deploy
         id: progressive_dispatch
         env:
-          DISPATCH_TOKEN: ${{ secrets.PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN || secrets.PAT }}
+          DISPATCH_TOKEN: ${{ steps.tokens.outputs.pd_token }}
         if: env.DISPATCH_TOKEN != '' && (steps.activity.outputs.dispatch_allowed == 'true' || inputs.force_progressive_dispatch == true)
         continue-on-error: true
         uses: peter-evans/repository-dispatch@v3
         with:
-          token: ${{ secrets.PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN || secrets.PAT }}
+          token: ${{ steps.tokens.outputs.pd_token }}
           repository: gptcompany/progressive-deploy
           event-type: rag-service-build
           client-payload: >-
@@ -93,30 +123,22 @@ jobs:
           echo "progressive-deploy repository_dispatch failed. Check PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN or PAT validity/scope." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Missing token notice for pepers
-        env:
-          DISPATCH_TOKEN: ${{ secrets.PEPERS_REPO_DISPATCH_TOKEN || secrets.PAT }}
-        if: env.DISPATCH_TOKEN == ''
+        if: steps.tokens.outputs.pepers_token == ''
         run: |
           echo "No dispatch token configured (expected PEPERS_REPO_DISPATCH_TOKEN or PAT); skipping pepers repository_dispatch." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Missing token notice for progressive-deploy
-        env:
-          DISPATCH_TOKEN: ${{ secrets.PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN || secrets.PAT }}
-        if: env.DISPATCH_TOKEN == ''
+        if: steps.tokens.outputs.pd_token == ''
         run: |
           echo "No dispatch token configured (expected PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN or PAT); skipping progressive-deploy repository_dispatch." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Progressive-deploy skip notice
-        if: env.DISPATCH_TOKEN != '' && steps.activity.outputs.dispatch_allowed != 'true' && inputs.force_progressive_dispatch != true
-        env:
-          DISPATCH_TOKEN: ${{ secrets.PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN || secrets.PAT }}
+        if: steps.tokens.outputs.pd_token != '' && steps.activity.outputs.dispatch_allowed != 'true' && inputs.force_progressive_dispatch != true
         run: |
           echo "progressive-deploy dispatch skipped because rag-service is busy or unreachable." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Progressive-deploy force notice
-        if: env.DISPATCH_TOKEN != '' && steps.activity.outputs.dispatch_allowed != 'true' && inputs.force_progressive_dispatch == true
-        env:
-          DISPATCH_TOKEN: ${{ secrets.PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN || secrets.PAT }}
+        if: steps.tokens.outputs.pd_token != '' && steps.activity.outputs.dispatch_allowed != 'true' && inputs.force_progressive_dispatch == true
         run: |
           echo "::warning::force_progressive_dispatch=true bypassed the rag-service activity gate."
           echo "force_progressive_dispatch=true bypassed the rag-service activity gate." >> "$GITHUB_STEP_SUMMARY"

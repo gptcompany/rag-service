@@ -1,15 +1,20 @@
-#!/bin/bash
-# Update RAGAnything systemd unit to point to rag-service location
+#!/usr/bin/env bash
+# Update RAGAnything systemd unit to point to rag-service location.
 # Run: sudo bash /path/to/rag-service/update-systemd.sh
-#
-# Override SERVICE_ROOT via env var or edit default below:
-#   RAG_SERVICE_ROOT=/opt/rag-service sudo bash update-systemd.sh
-
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_ROOT="${RAG_SERVICE_ROOT:-$SCRIPT_DIR}"
 SERVICE_USER="${RAG_SERVICE_USER:-$(whoami)}"
+ENV_FILE="${RAG_ENV_FILE:-$SERVICE_ROOT/.env}"
+RAG_VENV_ROOT="${RAG_VENV:-$SERVICE_ROOT/.venv}"
+RAG_PORT_VALUE="${RAG_PORT:-8767}"
+START_SCRIPT="$SERVICE_ROOT/scripts/raganything_start.sh"
+
+if [[ ! -x "$START_SCRIPT" ]]; then
+  echo "[rag-service] ERROR: start script not found at $START_SCRIPT" >&2
+  exit 1
+fi
 
 cat > /etc/systemd/system/raganything.service <<EOF
 [Unit]
@@ -20,15 +25,15 @@ After=network.target
 Type=simple
 User=${SERVICE_USER}
 WorkingDirectory=${SERVICE_ROOT}
-ExecStart=${SERVICE_ROOT}/scripts/raganything_start.sh
-
-# Anti-loop protection
+Environment=RAG_ENV_FILE=${ENV_FILE}
+Environment=RAG_VENV=${RAG_VENV_ROOT}
+Environment=RAG_PORT=${RAG_PORT_VALUE}
+ExecStart=${START_SCRIPT}
 Restart=on-failure
 RestartSec=30
 StartLimitIntervalSec=300
 StartLimitBurst=5
 RestartPreventExitStatus=1
-
 StandardOutput=journal
 StandardError=journal
 
@@ -37,13 +42,10 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl restart raganything
+systemctl enable --now raganything
 sleep 3
-systemctl status raganything --no-pager
+systemctl status raganything --no-pager || true
 
 echo ""
 echo "=== Health check ==="
-curl -s http://localhost:8767/health | python3 -m json.tool
-
-echo ""
-echo "Done! RAGAnything now runs from ${SERVICE_ROOT}/"
+curl -fsS "http://localhost:${RAG_PORT_VALUE}/health" | python3 -m json.tool

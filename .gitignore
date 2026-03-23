@@ -67,3 +67,8 @@ data/
 
 # RAGAnything upstream (git clone, tracked separately)
 raganything/
+
+# Local tooling artifacts
+.claude-flow/
+coverage.json
+uv.lock

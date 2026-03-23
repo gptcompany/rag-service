@@ -1,0 +1,17 @@
+services:
+  rag:
+    build: .
+    ports:
+      - "${RAG_PORT:-8767}:${RAG_PORT:-8767}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./.env.keys:/app/.env.keys:ro
+      - huggingface_cache:/root/.cache/huggingface
+      - ./data:/app/data
+    environment:
+      - OLLAMA_HOST=${RAG_OLLAMA_HOST:-http://host.docker.internal:11434}
+
+volumes:
+  huggingface_cache:

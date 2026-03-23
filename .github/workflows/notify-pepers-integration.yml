@@ -28,6 +28,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Extract Metadata
+        id: meta
+        run: |
+          VERSION=$(grep '^version =' pyproject.toml | cut -d '"' -f 2)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "build_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
       - name: Resolve dispatch tokens via dotenvx (self-hosted fallback)
         id: tokens
         run: |
@@ -114,7 +122,7 @@ jobs:
           repository: gptcompany/progressive-deploy
           event-type: rag-service-build
           client-payload: >-
-            {"source_repo":"${{ github.repository }}","source_ref":"${{ github.ref_name }}","source_sha":"${{ github.sha }}","source_workflow":"${{ github.workflow }}","ref":"${{ github.sha }}"}
+            {"source_repo":"${{ github.repository }}","source_ref":"${{ github.ref_name }}","source_sha":"${{ github.sha }}","source_workflow":"${{ github.workflow }}","ref":"${{ github.sha }}","version":"${{ steps.meta.outputs.version }}","commit_sha":"${{ steps.meta.outputs.sha }}","build_at":"${{ steps.meta.outputs.build_at }}"}
 
       - name: Progressive-deploy dispatch warning
         if: steps.progressive_dispatch.outcome == 'failure'

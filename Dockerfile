@@ -7,6 +7,15 @@ RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 
 COPY docker-constraints.txt /tmp/docker-constraints.txt
 RUN pip install --no-cache-dir -c /tmp/docker-constraints.txt sentence-transformers==5.2.0 FlagEmbedding==1.3.5 semchunk==2.2.2 docling==2.68.0 docling-core==2.59.0 docling-ibm-models==3.10.3 docling-parse==4.7.3 pdftext==0.6.3
 
+
+ARG VERSION=unknown
+ARG COMMIT_SHA=unknown
+ARG BUILD_AT=unknown
+
+ENV RAG_VERSION=${VERSION}
+ENV RAG_COMMIT_SHA=${COMMIT_SHA}
+ENV RAG_BUILD_AT=${BUILD_AT}
+
 WORKDIR /app
 COPY . .
 RUN if [ -f ./raganything/pyproject.toml ] || [ -f ./raganything/setup.py ]; then \

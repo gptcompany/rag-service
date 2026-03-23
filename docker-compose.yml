@@ -1,6 +1,11 @@
 services:
   rag:
-    build: .
+    build:
+      context: .
+      args:
+        VERSION: ${RAG_VERSION:-unknown}
+        COMMIT_SHA: ${RAG_COMMIT_SHA:-unknown}
+        BUILD_AT: ${RAG_BUILD_AT:-unknown}
     ports:
       - "${RAG_PORT:-8767}:${RAG_PORT:-8767}"
     extra_hosts:

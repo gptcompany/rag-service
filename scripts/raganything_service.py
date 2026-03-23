@@ -1784,7 +1784,7 @@ class RAGAnythingHandler(BaseHTTPRequestHandler):
                 {
                     "status": "ok",
                     "service": "RAGanything",
-                    "version": "3.3-smart",
+                    "version": os.environ.get("RAG_VERSION", "1.1.1"), "engine_version": "3.3-smart", "commit_sha": os.environ.get("RAG_COMMIT_SHA", "unknown"), "build_at": os.environ.get("RAG_BUILD_AT", "unknown"),
                     "port": PORT,
                     "rag_initialized": rag_ready,
                     "storage": RAG_STORAGE,

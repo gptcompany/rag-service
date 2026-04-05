@@ -16,6 +16,10 @@ services:
       - huggingface_cache:/root/.cache/huggingface
       - ./data:/app/data
     environment:
+      - RAG_PARSER=docling
+      - RAG_DEFAULT_PARSER=docling
+      - PARSER=docling
+      - RAG_WORKING_DIR=/app/data/rag_knowledge_base
       - OLLAMA_HOST=${RAG_OLLAMA_HOST:-http://host.docker.internal:11434}
 
 volumes:

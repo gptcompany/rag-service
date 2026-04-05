@@ -674,7 +674,7 @@ def select_parser(pdf_path: str, page_threshold: int = PARSER_PAGE_THRESHOLD) ->
         return DEFAULT_PARSER
 
     print(f"[ParserRouter] {num_pages} pages → mineru")
-    return "mineru"
+    return DEFAULT_PARSER
 
 
 # Global hash store instance
@@ -1257,7 +1257,7 @@ def get_rag_instance():
             # RAGAnything configuration
             config = RAGAnythingConfig(
                 working_dir=RAG_STORAGE,
-                parser="mineru",
+                parser=DEFAULT_PARSER,
                 parse_method="auto",
                 enable_image_processing=True,
                 enable_table_processing=True,

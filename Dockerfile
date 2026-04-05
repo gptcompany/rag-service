@@ -1,7 +1,7 @@
 FROM python:3.10-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libreoffice-core curl && rm -rf /var/lib/apt/lists/*
+    libreoffice-core curl libgl1 libglib2.0-0 && rm -rf /var/lib/apt/lists/*
 RUN curl -fsS https://dotenvx.sh | sh
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple torch==2.9.1+cpu torchvision==0.24.1+cpu
 COPY docker-constraints.txt /tmp/docker-constraints.txt

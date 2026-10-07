@@ -23,7 +23,7 @@ permissions:
 jobs:
   notify:
     if: github.repository_owner == 'gptcompany'
-    runs-on: [self-hosted, Linux, X64, sam-workstation]
+    runs-on: [self-hosted, Linux, X64, dell-runner]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,7 +43,7 @@ jobs:
           PD_TOKEN="${{ secrets.PROGRESSIVE_DEPLOY_REPO_DISPATCH_TOKEN || secrets.PAT }}"
           
           if command -v dotenvx &> /dev/null && [[ -f .env ]]; then
-            # If GitHub secrets are missing, try local dotenvx fallback on sam-workstation
+            # If GitHub secrets are missing, try local dotenvx fallback on dell-runner
             if [[ -z "$PEPERS_TOKEN" ]]; then
               echo "Resolving PEPERS_REPO_DISPATCH_TOKEN via dotenvx..."
               PEPERS_TOKEN=$(dotenvx get PEPERS_REPO_DISPATCH_TOKEN || dotenvx get GITHUB_PAT || dotenvx get PAT || true)

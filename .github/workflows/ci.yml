@@ -62,7 +62,7 @@ jobs:
         if: github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.cov.outputs.pct
         id: coverage_badge
         continue-on-error: true
-        uses: schneegans/dynamic-badges-action@v1.7.0
+        uses: schneegans/dynamic-badges-action@v1.9.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: ac39e6516b7114f96b84ba445b8e7a83

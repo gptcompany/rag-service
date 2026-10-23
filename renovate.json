@@ -2,5 +2,12 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "packageRules": [
+    {
+      "description": "Limita versioni python alla serie attuale <3.12 (Dockerfile 3.10, CI 3.11): mineru==2.7.1 (requires-python <3.14), torch/torchvision senza wheel cp315 e PR #4",
+      "matchPackageNames": ["python"],
+      "allowedVersions": "<3.12"
+    }
   ]
 }

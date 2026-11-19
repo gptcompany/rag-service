@@ -505,8 +505,8 @@ def cmd_run(a) -> None:
         """Esito su disco (sostituzione atomica) dopo ogni round e in uscita: un processo ucciso lascia l'ultimo round intero.
         Il vincitore esiste solo se tutte le domande sono state valutate per tutti i candidati ammessi."""
         admitted = {m for m in a.models if rounds_done and resident[m] and vram[m]}
-        decision = pick_winner(scores, vram, admitted) if complete else {
-            "winner": None, "reason": f"PARZIALE: {stop_reason}", "questions_evaluated": scores[a.models[0]][1], "questions_total": sum(len(by_paper[p]) for p in rounds)}
+        coverage = {"questions_evaluated": scores[a.models[0]][1], "questions_total": sum(len(by_paper[p]) for p in rounds)}
+        decision = {**pick_winner(scores, vram, admitted), **coverage} if complete else {"winner": None, "reason": f"PARZIALE: {stop_reason}", **coverage}
         result = {
             "status": "COMPLETO" if complete else "PARZIALE", "stop_reason": stop_reason, "rounds_completed": rounds_done,
             "scores": scores, "method": {"prior": f"Beta({PRIOR_CORRECT}, {PRIOR_WRONG})", "mc_samples": MC_SAMPLES, "mc_seed": MC_SEED},

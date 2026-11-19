@@ -273,7 +273,8 @@ def test_il_figlio_non_sopravvive_al_supervisore(tmp_path):
     assert _gone(int(child_pid.read_text()))
 
 
-def test_sigterm_a_meta_fusione_non_lascia_un_round_contato_a_meta(tmp_path, monkeypatch):
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT], ids=["sigterm", "sigint"])
+def test_un_segnale_a_meta_fusione_non_lascia_un_round_contato_a_meta(tmp_path, monkeypatch, sig):
     """Il round e' su disco e contato per tutti i candidati o per nessuno: il segnale attende la fine della fusione."""
     a = write_scratch(tmp_path, monkeypatch, 2)
     a.models = ["a", "b"]
@@ -283,16 +284,18 @@ def test_sigterm_a_meta_fusione_non_lascia_un_round_contato_a_meta(tmp_path, mon
         real(path, record)
         if not sent:
             sent.append(1)
-            os.kill(os.getpid(), signal.SIGTERM)
+            os.kill(os.getpid(), sig)
 
     monkeypatch.setattr(mt, "append_durable", append_then_signal)
     monkeypatch.setattr(mt, "ollama_ask", lambda *args: ({"answer": "x", "paper": "p0"}, 1.0, {"size": 10, "size_vram": 10}))
-    previous = signal.signal(signal.SIGTERM, mt._terminated)
+    previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+    mt.install_child_handlers()  # gli stessi gestori che main() installa nel figlio
     try:
         with pytest.raises(SystemExit):
             mt.cmd_run(a)
     finally:
-        signal.signal(signal.SIGTERM, previous)
+        for s, handler in previous.items():
+            signal.signal(s, handler)
     res = result(tmp_path)
     lines = (tmp_path / "rounds.jsonl").read_text().splitlines()
     assert res["rounds_completed"] == len(lines) == 1 and res["scores"]["a"][1] == res["scores"]["b"][1] == 1
@@ -309,3 +312,11 @@ def test_l_arresto_del_supervisore_conserva_la_copertura_delle_domande(tmp_path)
     (tmp_path / "result.json").write_text(json.dumps(partial))
     mt.finalize_result(tmp_path, ts.Outcome(ts.EXIT_THERMAL, {"reason": "thermal_limit"}, {}, "SIGTERM"), "arresto termico", {})
     assert result(tmp_path)["decision"]["questions_evaluated"] == 2 and result(tmp_path)["decision"]["questions_total"] == 3
+
+
+def test_un_figlio_orfano_prima_di_partire_non_diventa_un_supervisore(tmp_path, monkeypatch):
+    """La variabile c'e' ma il padre non e' piu' quello che l'ha scritta: il supervisore e' morto durante l'avvio. Si esce."""
+    monkeypatch.setenv("F775_SUPERVISOR_PID", str(os.getppid() + 1))
+    monkeypatch.setattr(mt, "run_supervised", lambda *a: pytest.fail("un orfano ha riavviato la prova sotto un nuovo supervisore"))
+    with pytest.raises(SystemExit, match="supervisore"):
+        mt.main(["--scratch", str(tmp_path), "run", "--models", "a", "--guard-cmd", "true"])

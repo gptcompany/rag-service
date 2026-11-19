@@ -27,6 +27,9 @@ HWMON = Path("/sys/class/hwmon")
 PROC = Path("/proc")
 EXIT_THERMAL = 75  # arresto termico o sensore perso: figlio terminato, modelli scaricati (EX_TEMPFAIL)
 EXIT_PREFLIGHT = 78  # soglie illeggibili o gia' superate: il figlio non e' mai partito (EX_CONFIG)
+EXIT_SHUTDOWN_FAILED = 70  # arresto termico NON verificato: container ancora attivo, modello ancora caricato o controllo illeggibile (EX_SOFTWARE)
+COMPOSE_FILE = Path(__file__).resolve().parent.parent / "docker-compose.yml"
+RAG_SERVICE = "rag"  # il servizio del compose che, con una query di retrieve in volo, continua a chiamare ollama
 # LIMITE di sicurezza: dopo SIGTERM il figlio ha 5 s per uscire; oltre, SIGKILL al gruppo. Non e' un parametro di
 # misura: limita quanto a lungo la GPU puo' restare caricata dopo che i sensori hanno dato l'allarme.
 TERM_GRACE_S = 5
@@ -34,6 +37,12 @@ TERM_GRACE_S = 5
 SENSOR_READ_TIMEOUT_S = 10
 # LIMITE di risorsa: l'intero scarico dei modelli (/api/ps e un POST per modello) finisce entro 30 s o si esce comunque.
 UNLOAD_TIMEOUT_S = 30
+# LIMITE di risorsa: `docker compose stop` = SIGTERM, attesa PREDEFINITA di Docker (10 s, o stop_grace_period del compose: nessun -t
+# qui) e SIGKILL. 60 s coprono il caso normale con margine; oltre e' un daemon appeso, e l'arresto e' un errore (fail-closed).
+DOCKER_TIMEOUT_S = 60
+# LIMITE di risorsa: ollama completa lo scarico in modo asincrono, per cui la verifica "nessun modello caricato" ripete /api/ps
+# fino a 10 s; un modello ancora residente dopo di allora e' un arresto non riuscito, non un'attesa da ripetere.
+VERIFY_TIMEOUT_S = 10
 # LIMITE di reattivita': verifica che il gruppo sia sparito 20 volte al secondo, costo nullo.
 GROUP_POLL_S = 0.05
 # LIMITE di reattivita': il registro e' diagnostica, non sicurezza; se stderr non accetta la riga entro 1 s si prosegue senza.
@@ -50,6 +59,7 @@ class Outcome:
     tripped: dict | None  # {"reason": "thermal_limit"|"sensor_lost", ...} se il supervisore ha fermato il figlio
     peaks: dict
     how: str = ""  # "SIGTERM" o "SIGKILL": come si e' chiuso il gruppo
+    shutdown: dict | None = None  # esito di thermal_shutdown (container fermo, modelli scaricati, tempi) se c'e' stato un arresto
 
 
 def log(event: str, **fields) -> None:
@@ -196,13 +206,22 @@ def _ollama(host: str, method: str, path: str, body: dict | None = None) -> tupl
         conn.close()
 
 
+def _loaded(host: str, strict: bool = True) -> list[str]:
+    """Nomi dei modelli residenti (`/api/ps`); ValueError se l'elenco non e' valido. `strict`: anche una voce senza nome e' un errore
+    (la verifica non puo' dire "nessun modello"); lo scarico invece ferma tutto cio' che sa identificare."""
+    status, raw = _ollama(host, "GET", "/api/ps")
+    listing = json.loads(raw)
+    if status != 200 or not isinstance(listing, dict) or not isinstance(listing.get("models"), list):
+        raise ValueError(f"HTTP {status}, elenco non valido: {raw[:120]!r}")
+    names = [m["name"] for m in listing["models"] if isinstance(m, dict) and isinstance(m.get("name"), str)]
+    if strict and len(names) != len(listing["models"]):  # una voce non riconosciuta e' un modello che non si sa scaricare: mai "nessun modello"
+        raise ValueError(f"voce senza nome nell'elenco: {raw[:120]!r}")
+    return names
+
+
 def _unload(host: str) -> None:
     try:
-        status, raw = _ollama(host, "GET", "/api/ps")
-        listing = json.loads(raw)
-        if status != 200 or not isinstance(listing, dict) or not isinstance(listing.get("models"), list):
-            raise ValueError(f"HTTP {status}, elenco non valido: {raw[:120]!r}")
-        models = [m["name"] for m in listing["models"] if isinstance(m, dict) and isinstance(m.get("name"), str)]
+        models = _loaded(host, strict=False)
     except (OSError, ValueError, http.client.HTTPException) as exc:
         log("thermal_model_stop_failed", error=f"/api/ps: {exc}")
         return
@@ -231,10 +250,105 @@ def unload_models(host: str) -> None:
         log("thermal_model_stop_failed", error=f"scarico non concluso entro {UNLOAD_TIMEOUT_S} s")
 
 
+def _compose(compose_file: Path, *args: str) -> subprocess.CompletedProcess:
+    """`docker compose` con i permessi Docker che l'utente ha gia': niente sudo, nessun privilegio nuovo."""
+    return subprocess.run(["docker", "compose", "-f", str(compose_file), *args], capture_output=True, text=True, check=False, timeout=DOCKER_TIMEOUT_S)
+
+
+def stop_rag_service(compose_file: Path = COMPOSE_FILE, service: str = RAG_SERVICE) -> bool:
+    """Ferma il container: la query di retrieve ancora in volo muore con lui. Uno stop manuale non fa scattare `unless-stopped`."""
+    try:
+        done = _compose(compose_file, "stop", service)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log("rag_stop_failed", service=service, error=str(exc))
+        return False
+    if done.returncode != 0:
+        log("rag_stop_failed", service=service, exit=done.returncode, stderr=done.stderr[-200:])
+    return done.returncode == 0
+
+
+def rag_service_running(compose_file: Path = COMPOSE_FILE, service: str = RAG_SERVICE) -> bool | None:
+    """True se il container gira, False se e' fermo (o non esiste), None se non si riesce a saperlo."""
+    try:
+        done = _compose(compose_file, "ps", "--status", "running", "--quiet", service)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log("rag_check_failed", service=service, error=str(exc))
+        return None
+    if done.returncode != 0:
+        log("rag_check_failed", service=service, exit=done.returncode, stderr=done.stderr[-200:])
+        return None
+    return bool(done.stdout.strip())
+
+
+def _models_loaded(host: str) -> list[str] | None:
+    """Modelli ancora residenti dopo lo scarico: ripete /api/ps finche' e' vuoto, al piu' VERIFY_TIMEOUT_S sull'insieme (un ollama che
+    gocciola la risposta non deve trattenere il supervisore). Ultimo elenco letto, None se illeggibile o mai arrivato."""
+    seen: list[list[str] | None] = [None]
+    stop = threading.Event()
+
+    def poll() -> None:
+        while not stop.is_set():
+            try:
+                seen[0] = _loaded(host)
+            except (OSError, ValueError, http.client.HTTPException) as exc:
+                seen[0] = None
+                log("thermal_model_check_failed", error=str(exc))
+                return
+            if not seen[0]:
+                return
+            time.sleep(GROUP_POLL_S)
+
+    worker = threading.Thread(target=poll, daemon=True)
+    worker.start()
+    worker.join(VERIFY_TIMEOUT_S)
+    if worker.is_alive():
+        last = seen[0]  # istantanea: una risposta tardiva non deve trasformare il timeout in "nessun modello"
+        stop.set()
+        log("thermal_model_check_failed", error=f"verifica non conclusa entro {VERIFY_TIMEOUT_S} s")
+        return last or None
+    return seen[0]
+
+
+def thermal_shutdown(host: str, compose_file: Path = COMPOSE_FILE, service: str = RAG_SERVICE) -> dict:
+    """Arresto dopo la morte del figlio: PRIMA il container rag-service (una query viva ricaricherebbe i modelli), POI lo scarico di
+    ollama, infine i due controlli. `ok` solo se il container e' verificato fermo e nessun modello e' caricato: il resto e' un errore.
+    Il servizio resta fermo (restart `unless-stopped` non scatta dopo uno stop manuale) fino a `restart_rag_service`."""
+    t0 = time.monotonic()
+    stopped = stop_rag_service(compose_file, service)
+    t1 = time.monotonic()
+    unload_models(host)  # anche se lo stop e' fallito: la GPU va protetta comunque
+    t2 = time.monotonic()
+    running = rag_service_running(compose_file, service)
+    loaded = _models_loaded(host)
+    container_stopped = False if not stopped else None if running is None else not running
+    return {"ok": container_stopped is True and loaded == [], "stop_s": round(t1 - t0, 3), "unload_s": round(t2 - t1, 3),
+            "container_stopped": container_stopped, "models_loaded": loaded}
+
+
+def restart_rag_service(sensors, compose_file: Path = COMPOSE_FILE, service: str = RAG_SERVICE) -> bool:
+    """Unico modo di rialzare il rag-service dopo un arresto termico: azione esplicita, solo con i sensori sotto le soglie derivate
+    da loro (le stesse del supervisore), registrata. Sensore illeggibile o temperatura alta = rifiuto."""
+    try:
+        readings = sensors.read()
+    except SensorError as exc:
+        log("rag_restart_refused", error=str(exc))
+        return False
+    if _hot(sensors, readings):
+        log("rag_restart_refused", readings=readings, limits=sensors.limits)
+        return False
+    try:
+        done = _compose(compose_file, "start", service)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log("rag_restart_failed", error=str(exc))
+        return False
+    log("rag_restart" if done.returncode == 0 else "rag_restart_failed", readings=readings, limits=sensors.limits, exit=done.returncode)
+    return done.returncode == 0
+
+
 def supervise(argv: list[str], sensors, unload, env: dict | None = None) -> Outcome:
     """Esegue `argv` sotto controllo termico. Il figlio parte solo dopo una lettura valida e sotto soglia.
     Un SIGTERM o SIGINT al supervisore (scheduler, operatore) vale come Ctrl-C: il gruppo del figlio, che sta in una
-    sessione propria e non lo riceverebbe, viene terminato e l'interruzione risale. Un segnale che arriva prima che il
+    sessione propria e non lo riceverebbe, viene terminato e l'interruzione risale. All'arresto `unload()` ferma il rag-service, scarica i modelli e ne verifica l'esito (dict con `ok`). Un segnale che arriva prima che il
     figlio sia registrato per la pulizia resta in sospeso e scatta appena lo e'; durante pulizia e scarico e' ignorato."""
     try:
         first = sensors.read()
@@ -277,8 +391,11 @@ def supervise(argv: list[str], sensors, unload, env: dict | None = None) -> Outc
                 how = terminate_group(proc)
         if tripped:
             log("thermal_stop", **tripped, limits=sensors.limits, how=how)
-            unload()
-            return Outcome(EXIT_THERMAL, tripped, sensors.peaks, how)
+            shutdown = unload()
+            ok = isinstance(shutdown, dict) and shutdown.get("ok") is True  # niente successo presunto: senza i controlli e' un errore
+            log("thermal_shutdown" if ok else "thermal_shutdown_failed", reason=tripped["reason"], readings=tripped.get("readings"),
+                limits=sensors.limits, decision="stopped" if ok else "failed", alarm=not ok, **(shutdown if isinstance(shutdown, dict) else {}))
+            return Outcome(EXIT_THERMAL if ok else EXIT_SHUTDOWN_FAILED, tripped, sensors.peaks, how, shutdown)
         return Outcome(proc.returncode, None, sensors.peaks, how)
     finally:
         for sig, handler in previous.items():

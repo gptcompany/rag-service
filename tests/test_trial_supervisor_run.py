@@ -57,7 +57,7 @@ def test_il_supervisore_legge_i_sensori_prima_di_avviare_il_figlio(monkeypatch):
     sensors, order = FakeSensors(cool), []
     real = ts.subprocess.Popen
     monkeypatch.setattr(ts.subprocess, "Popen", lambda *a, **k: (order.append(list(sensors.events)), real(*a, **k))[1])
-    out = ts.supervise([sys.executable, "-c", "pass"], sensors, lambda: None)
+    out = ts.supervise([sys.executable, "-c", "pass"], sensors, lambda: {"ok": True})
     assert order == [["read"]] and out.code == 0 and out.tripped is None
 
 
@@ -66,18 +66,18 @@ def test_sensore_illeggibile_prima_della_partenza_non_avvia_il_figlio(monkeypatc
         raise ts.SensorError("nvidia-smi N/A")
 
     monkeypatch.setattr(ts.subprocess, "Popen", lambda *a, **k: pytest.fail("figlio avviato senza sensori"))
-    assert ts.supervise(["x"], FakeSensors(unreadable), lambda: None).code == ts.EXIT_PREFLIGHT
+    assert ts.supervise(["x"], FakeSensors(unreadable), lambda: {"ok": True}).code == ts.EXIT_PREFLIGHT
 
 
 def test_soglia_gia_superata_non_avvia_il_figlio(monkeypatch):
     monkeypatch.setattr(ts.subprocess, "Popen", lambda *a, **k: pytest.fail("figlio avviato a soglia superata"))
-    assert ts.supervise(["x"], FakeSensors(lambda n: HOT), lambda: None).code == ts.EXIT_PREFLIGHT
+    assert ts.supervise(["x"], FakeSensors(lambda n: HOT), lambda: {"ok": True}).code == ts.EXIT_PREFLIGHT
 
 
 def test_superamento_termina_figlio_e_discendenti_e_scarica_i_modelli(tmp_path, capsys):
     pids, unloaded = tmp_path / "pids", []
     out = ts.supervise([sys.executable, "-c", SPAWNER, str(pids)], FakeSensors(lambda n: HOT if pids.exists() else cool()),
-                       lambda: unloaded.append(1))
+                       lambda: unloaded.append(1) or {"ok": True})
     child, grandchild = map(int, pids.read_text().split())
     assert out.code == ts.EXIT_THERMAL and out.tripped["reason"] == "thermal_limit" and unloaded == [1]
     assert gone(child) and gone(grandchild), "il gruppo di processi doveva morire per intero"
@@ -93,7 +93,7 @@ def test_sensore_che_sparisce_a_meta_prova_ferma_la_prova(tmp_path, capsys):
             raise ts.SensorError("temp1_input sparito")
         return cool()
 
-    out = ts.supervise([sys.executable, "-c", SPAWNER, str(pids)], FakeSensors(step), lambda: unloaded.append(1))
+    out = ts.supervise([sys.executable, "-c", SPAWNER, str(pids)], FakeSensors(step), lambda: unloaded.append(1) or {"ok": True})
     child, grandchild = map(int, pids.read_text().split())
     assert out.code == ts.EXIT_THERMAL and out.tripped["reason"] == "sensor_lost" and unloaded == [1]
     assert gone(child) and gone(grandchild)
@@ -103,13 +103,13 @@ def test_sensore_che_sparisce_a_meta_prova_ferma_la_prova(tmp_path, capsys):
 def test_sigkill_oltre_la_scadenza_se_il_figlio_ignora_sigterm(tmp_path, monkeypatch):
     up = tmp_path / "up"
     monkeypatch.setattr(ts, "TERM_GRACE_S", 0.3)
-    out = ts.supervise([sys.executable, "-c", IGNORES_TERM, str(up)], FakeSensors(lambda n: HOT if up.exists() else cool()), lambda: None)
+    out = ts.supervise([sys.executable, "-c", IGNORES_TERM, str(up)], FakeSensors(lambda n: HOT if up.exists() else cool()), lambda: {"ok": True})
     assert out.code == ts.EXIT_THERMAL and out.how == "SIGKILL"
 
 
 def test_uscita_normale_propaga_il_codice_e_non_scarica_nulla():
     unloaded = []
-    out = ts.supervise([sys.executable, "-c", "raise SystemExit(3)"], FakeSensors(cool), lambda: unloaded.append(1))
+    out = ts.supervise([sys.executable, "-c", "raise SystemExit(3)"], FakeSensors(cool), lambda: unloaded.append(1) or {"ok": True})
     assert out.code == 3 and out.tripped is None and unloaded == []
 
 
@@ -122,7 +122,7 @@ def test_interruzione_dell_operatore_non_lascia_il_gruppo_in_vita(tmp_path):
         return cool()
 
     with pytest.raises(KeyboardInterrupt):
-        ts.supervise([sys.executable, "-c", SPAWNER, str(pids)], FakeSensors(step), lambda: None)
+        ts.supervise([sys.executable, "-c", SPAWNER, str(pids)], FakeSensors(step), lambda: {"ok": True})
     assert all(gone(int(p)) for p in pids.read_text().split())
 
 

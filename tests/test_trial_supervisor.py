@@ -68,3 +68,25 @@ def test_nvidia_smi_che_esce_con_errore_blocca_anche_la_soglia(monkeypatch):
     monkeypatch.setattr(ts.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "GPU Slowdown Temp : 92 C\n", "returncode": 9})())
     with pytest.raises(ts.SensorError, match="exit 9"):
         ts.gpu_slowdown_limit()
+
+
+@pytest.mark.parametrize("out", ["812.9, 70\n", "812, 7e-1\n", "812, 70, 3\n"])
+def test_telemetria_gpu_non_intera_blocca(monkeypatch, tmp_path, out):
+    (tmp_path / "temp1_input").write_text("50000\n")
+    sensors = object.__new__(ts.Sensors)
+    sensors.cpu_input, sensors.peaks = tmp_path / "temp1_input", {"vram_mib": 0, "gpu_c": 0.0, "cpu_c": 0.0}
+    monkeypatch.setattr(ts.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": out, "returncode": 0})())
+    with pytest.raises(ts.SensorError):
+        sensors.read()
+
+
+def test_output_di_nvidia_smi_non_decodificabile_blocca_soglia_e_lettura(monkeypatch):
+    def undecodable(*a, **k):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(ts.subprocess, "run", undecodable)
+    with pytest.raises(ts.SensorError):
+        ts.gpu_slowdown_limit()
+    sensors = object.__new__(ts.Sensors)
+    with pytest.raises(ts.SensorError):
+        sensors.read()

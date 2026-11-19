@@ -38,7 +38,7 @@ def test_sigterm_al_supervisore_ferma_il_gruppo(tmp_path):
     before = signal.getsignal(signal.SIGTERM)
     try:
         with pytest.raises(KeyboardInterrupt):
-            ts.supervise([sys.executable, "-c", SPAWNER, str(pids)], FakeSensors(step), lambda: None)
+            ts.supervise([sys.executable, "-c", SPAWNER, str(pids)], FakeSensors(step), lambda: {"ok": True})
         assert all(gone(int(p)) for p in pids.read_text().split()) and signal.getsignal(signal.SIGTERM) == before
     finally:
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
@@ -55,7 +55,7 @@ def test_un_log_che_non_si_scrive_non_salta_arresto_e_scarico(tmp_path, monkeypa
     pids, unloaded = tmp_path / "pids", []
     monkeypatch.setattr(sys, "stderr", Broken())
     sensors = FakeSensors(lambda n: HOT if pids.exists() else cool())
-    out = ts.supervise([sys.executable, "-c", SPAWNER, str(pids)], sensors, lambda: unloaded.append(1))
+    out = ts.supervise([sys.executable, "-c", SPAWNER, str(pids)], sensors, lambda: unloaded.append(1) or {"ok": True})
     assert out.code == ts.EXIT_THERMAL and unloaded == [1] and all(gone(int(p)) for p in pids.read_text().split())
 
 
@@ -137,7 +137,7 @@ def test_un_annullamento_subito_dopo_la_nascita_del_figlio_non_lo_lascia_orfano(
     signal.signal(signal.SIGTERM, _raising_handler)
     try:
         with pytest.raises(KeyboardInterrupt):
-            ts.supervise([sys.executable, "-c", SPAWNER, str(pids)], FakeSensors(lambda n: cool()), lambda: None)
+            ts.supervise([sys.executable, "-c", SPAWNER, str(pids)], FakeSensors(lambda n: cool()), lambda: {"ok": True})
     finally:
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
     assert gone(made[0])
@@ -150,6 +150,7 @@ def test_uno_sigterm_durante_lo_scarico_non_lo_interrompe(tmp_path):
         os.kill(os.getpid(), signal.SIGTERM)  # lo scheduler insiste mentre i modelli si stanno scaricando
         time.sleep(0.2)
         done.append(1)
+        return {"ok": True}
 
     signal.signal(signal.SIGTERM, _raising_handler)
     try:
@@ -240,7 +241,7 @@ def test_uno_stderr_bloccato_non_ferma_arresto_e_scarico(tmp_path, monkeypatch):
     monkeypatch.setattr(ts, "LOG_WAIT_S", 0.2)
     t0 = time.monotonic()
     try:
-        out = ts.supervise([sys.executable, "-c", SPAWNER, str(pids)], FakeSensors(lambda n: HOT if pids.exists() else cool()), lambda: unloaded.append(1))
+        out = ts.supervise([sys.executable, "-c", SPAWNER, str(pids)], FakeSensors(lambda n: HOT if pids.exists() else cool()), lambda: unloaded.append(1) or {"ok": True})
     finally:
         release.set()
     assert out.code == ts.EXIT_THERMAL and unloaded == [1] and time.monotonic() - t0 < 10

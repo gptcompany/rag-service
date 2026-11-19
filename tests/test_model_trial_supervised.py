@@ -77,9 +77,15 @@ def result(tmp_path):
     return json.loads((tmp_path / "result.json").read_text())
 
 
+def ps_until_unloaded(h, srv):
+    """/api/ps di un ollama vero: il modello e' residente finche' non arriva lo scarico (keep_alive=0), poi l'elenco e' vuoto."""
+    unloaded = any(m == "POST" and p == "/api/generate" and body.get("keep_alive") == 0 for m, p, body in srv.calls)
+    send_json(h, {"models": [] if unloaded else [{"name": "a", "size": 10, "size_vram": 10}]})
+
+
 def test_thermal_before_headers_il_supervisore_ferma_il_figlio_in_attesa_delle_intestazioni(tmp_path, monkeypatch, ollama, supervised):
     """Il caso R1 del report: il POST non ha ancora le intestazioni quando i sensori alzano `hot`."""
-    srv = ollama(post__api_chat=hang_before_headers)
+    srv = ollama(post__api_chat=hang_before_headers, get__api_ps=ps_until_unloaded)
     write_scratch(tmp_path, monkeypatch, 1)
     sensors = Sensors(lambda n: HOT if ("POST", "/api/chat") in srv.paths() else COOL)
     t0 = time.monotonic()
@@ -96,7 +102,7 @@ def test_retrieve_hybrid_parte_solo_dopo_il_supervisore_e_si_ferma_a_soglia(tmp_
     """Il residuo di #19: il retrieve hybrid chiama ollama (embedding) prima che parta qualunque watcher."""
     events = []
     rag = ollama(post__query=lambda h, s: (events.append("query"), hang_before_headers(h, s)))
-    ollama_srv = ollama()
+    ollama_srv = ollama(get__api_ps=ps_until_unloaded)
     (tmp_path / "questions.jsonl").write_text(json.dumps({"id": "q1", "paper": "p", "answer": "x", "question": "?"}) + "\n")
     sensors = Sensors(lambda n: HOT if "query" in events else COOL, events)
     code = supervised(sensors, "retrieve", "--rag-url", rag.host, "--ollama-host", ollama_srv.host)
@@ -105,7 +111,7 @@ def test_retrieve_hybrid_parte_solo_dopo_il_supervisore_e_si_ferma_a_soglia(tmp_
 
 
 def test_sensore_che_sparisce_a_meta_prova_ferma_figlio_e_modelli(tmp_path, monkeypatch, ollama, supervised):
-    srv = ollama(post__api_chat=hang_before_headers)
+    srv = ollama(post__api_chat=hang_before_headers, get__api_ps=ps_until_unloaded)
     write_scratch(tmp_path, monkeypatch, 2)
 
     def step(n):
@@ -128,7 +134,7 @@ def test_round_parziali_dopo_arresto_termico_nessun_vincitore_e_i_round_completi
             return stream([json.dumps({"message": {"content": json.dumps({"answer": "x", "paper": "p0"})}}), json.dumps({"done": True})])(h, s)
         hang_before_headers(h, s)
 
-    srv = ollama(post__api_chat=chat, get__api_ps=lambda h, s: send_json(h, {"models": [{"name": "a", "size": 10, "size_vram": 10}]}))
+    srv = ollama(post__api_chat=chat, get__api_ps=ps_until_unloaded)
     write_scratch(tmp_path, monkeypatch, 2)
     code = supervised(Sensors(lambda n: HOT if count["n"] >= 2 else COOL), "run", "--models", "a", "--ollama-host", srv.host, "--guard-cmd", "true")
     res = result(tmp_path)

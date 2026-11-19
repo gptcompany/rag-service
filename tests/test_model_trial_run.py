@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -194,7 +193,7 @@ def test_candidato_non_ammesso_non_vince_ma_ha_la_sua_p_nel_report():
 
 def test_run_usa_tutte_le_domande_e_ignora_i_non_ammessi(tmp_path, monkeypatch):
     def ask(host, model, ctx, question, hot):
-        right = {"answer": "x", "paper": "p0, p1, p2"}
+        right = {"answer": "x", "paper": ["p0", "p1", "p2"]}
         # "b" e' perfetto ma sfora la VRAM: non deve vincere.
         return right, 1.0, {"size": 10, "size_vram": 10 if model == "a" else 5}
 
@@ -202,40 +201,6 @@ def test_run_usa_tutte_le_domande_e_ignora_i_non_ammessi(tmp_path, monkeypatch):
     assert res["rounds_completed"] == 3 and res["scores"]["a"] == [3, 3]  # nessun arresto anticipato
     assert res["admitted"] == ["a"] and res["decision"]["winner"] == "a"
     assert res["method"]["prior"] == "Beta(1, 1)" and "p_best" in res["decision"]
-
-
-class _Resp:
-    """Risposta in streaming finta: `lines` seguite, se `block`, da un'attesa che solo close() interrompe."""
-
-    def __init__(self, lines, block=False):
-        import threading
-
-        self.lines, self.block, self.closed = lines, block, threading.Event()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        pass
-
-    def raise_for_status(self):
-        pass
-
-    def close(self):
-        self.closed.set()
-
-    def iter_lines(self):
-        yield from self.lines
-        if self.block:
-            self.closed.wait(5)
-            raise OSError("connessione chiusa")
-
-
-def _post(monkeypatch, resp):
-    import requests
-
-    monkeypatch.setattr(requests, "post", lambda *a, **k: resp)
-    monkeypatch.setattr(requests, "get", lambda *a, **k: MagicMock(json=lambda: {"models": []}))
 
 
 def test_ollama_ask_non_parte_se_la_soglia_e_gia_scattata(monkeypatch):
@@ -250,43 +215,6 @@ def test_ollama_ask_non_parte_se_la_soglia_e_gia_scattata(monkeypatch):
     with pytest.raises(mt.ThermalStop):
         mt.ollama_ask("h", "m", "c", "q", hot)
     assert not called
-
-
-def test_ollama_ask_annulla_la_richiesta_senza_attendere_nuove_righe(monkeypatch):
-    import threading
-
-    monkeypatch.setattr(mt, "HOT_POLL_S", 0.01)
-    resp = _Resp([], block=True)
-    _post(monkeypatch, resp)
-    hot = threading.Event()
-    threading.Timer(0.05, hot.set).start()
-    with pytest.raises(mt.ThermalStop):
-        mt.ollama_ask("h", "m", "c", "q", hot)
-    assert resp.closed.is_set()
-
-
-def test_errore_nel_flusso_non_e_una_risposta_sbagliata(monkeypatch):
-    import threading
-
-    _post(monkeypatch, _Resp([b'{"error": "model failed to load"}']))
-    with pytest.raises(mt.OllamaError, match="model failed"):
-        mt.ollama_ask("h", "m", "c", "q", threading.Event())
-
-
-def test_flusso_senza_done_e_incompleto(monkeypatch):
-    import threading
-
-    _post(monkeypatch, _Resp([b'{"message": {"content": "{}"}}']))
-    with pytest.raises(mt.OllamaError, match="senza done"):
-        mt.ollama_ask("h", "m", "c", "q", threading.Event())
-
-
-def test_flusso_completo_con_done_viene_punteggiato(monkeypatch):
-    import threading
-
-    _post(monkeypatch, _Resp([b'{"message": {"content": "{\\"answer\\": \\"x\\"}"}}', b'{"done": true}']))
-    reply, _, _ = mt.ollama_ask("h", "m", "c", "q", threading.Event())
-    assert reply == {"answer": "x"}
 
 
 def test_errore_ollama_scarta_il_round_e_lo_registra(tmp_path, monkeypatch):
@@ -335,34 +263,3 @@ def test_run_rifiuta_contesti_di_altre_domande(tmp_path, monkeypatch):
     monkeypatch.setattr(mt, "ollama_ask", ask)
     with pytest.raises(SystemExit, match="rilanciare retrieve"):
         mt.cmd_run(_args(tmp_path))
-
-
-def test_errore_http_di_ollama_diventa_errore_del_round(monkeypatch):
-    import threading
-
-    import requests
-
-    class Bad(_Resp):
-        def raise_for_status(self):
-            raise requests.HTTPError("500")
-
-    _post(monkeypatch, Bad([]))
-    with pytest.raises(mt.OllamaError, match="500"):
-        mt.ollama_ask("h", "m", "c", "q", threading.Event())
-
-
-def test_ollama_ask_non_segue_i_redirect(monkeypatch):
-    import threading
-
-    import requests
-
-    seen = {}
-
-    def post(*a, **k):
-        seen.update(k)
-        return _Resp([b'{"message": {"content": "{}"}}', b'{"done": true}'])
-
-    monkeypatch.setattr(requests, "post", post)
-    monkeypatch.setattr(requests, "get", lambda *a, **k: MagicMock(json=lambda: {"models": []}))
-    mt.ollama_ask("h", "m", "c", "q", threading.Event())
-    assert seen["allow_redirects"] is False

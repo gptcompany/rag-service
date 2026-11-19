@@ -493,7 +493,7 @@ def cmd_run(a) -> None:
         Il vincitore esiste solo se tutte le domande sono state valutate per tutti i candidati ammessi."""
         admitted = {m for m in a.models if rounds_done and resident[m] and vram[m]}
         decision = pick_winner(scores, vram, admitted) if complete else {
-            "winner": None, "reason": f"PARZIALE: {stop_reason}", "questions_evaluated": rounds_done, "questions_total": len(rounds)}
+            "winner": None, "reason": f"PARZIALE: {stop_reason}", "questions_evaluated": scores[a.models[0]][1], "questions_total": sum(len(by_paper[p]) for p in rounds)}
         result = {
             "status": "COMPLETO" if complete else "PARZIALE", "stop_reason": stop_reason, "rounds_completed": rounds_done,
             "scores": scores, "method": {"prior": f"Beta({PRIOR_CORRECT}, {PRIOR_WRONG})", "mc_samples": MC_SAMPLES, "mc_seed": MC_SEED},
@@ -506,7 +506,7 @@ def cmd_run(a) -> None:
         os.replace(tmp, scratch / "result.json")
         return result
 
-    complete = False
+    complete = finished = False
     try:
         with sensors:
             for paper in rounds:
@@ -548,7 +548,8 @@ def cmd_run(a) -> None:
                 stop_reason = f"in corso: round {rounds_done}/{len(rounds)} completato"
                 snapshot(False)
             else:
-                stop_reason, complete = "domande finite", rounds_done > 0
+                stop_reason, finished = "domande finite", rounds_done > 0
+        complete = finished  # solo a sensori chiusi: un'interruzione durante la chiusura non lascia un vincitore
     except Exception as exc:  # difetto imprevisto: l'esito dei round completi resta scritto, poi l'errore risale
         stop_reason = f"eccezione non prevista dopo {rounds_done} round: {exc!r}"
         log("run_crashed", error=repr(exc), rounds_completed=rounds_done)

@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import re
+import socket
 import stat
 import subprocess
 import sys
@@ -42,6 +44,11 @@ HWMON = Path("/sys/class/hwmon")
 # LIMITE di reattivita': la connessione si chiude entro 1 s da `hot`; un risveglio al secondo costa nulla.
 HOT_POLL_S = 1.0
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+# LIMITE di risorsa (un ollama appeso non deve bloccare la prova per sempre), NON il meccanismo di arresto termico:
+# `hot` e' sorvegliato dal thread chiamante in ogni fase e tronca la connessione indipendentemente da questo timeout.
+REQUEST_TIMEOUT_S = 600
+# LIMITE di risorsa: /api/ps e l'unload del modello rispondono subito o la loro risposta non serve piu'.
+SHORT_REQUEST_TIMEOUT_S = 30
 # LIMITE di risorsa, non un parametro statistico: 200k campioni per candidato occupano pochi MB (3 x 1.6 MB
 # in float64) e portano l'errore Monte Carlo su P(migliore) a ~sqrt(0.25/N) = 0.1%, ben sotto ogni differenza
 # che cambi la scelta. Il seme fissa solo la riproducibilita' del report.
@@ -263,60 +270,134 @@ class OllamaError(Exception):
     """Generazione fallita o incompleta: non e' una risposta sbagliata e non va contata come tale."""
 
 
-def _watch_hot(resp, hot: threading.Event, done: threading.Event) -> None:
-    """Chiude la connessione appena scatta `hot`, anche se Ollama non emette righe (caricamento, prompt lungo)."""
-    while not done.is_set():
-        if hot.wait(HOT_POLL_S):
-            resp.close()
+def _open(host: str, box: dict, timeout: float) -> http.client.HTTPConnection:
+    """Connessione http.client (nessun proxy ambientale, nessun redirect) il cui socket e' registrato in `box` per poterlo troncare."""
+    url = urlparse(host)
+    if url.scheme != "http" or not url.hostname:
+        raise OllamaError(f"URL ollama non valido (serve http://host:porta): {host}")
+    conn = http.client.HTTPConnection(url.hostname, url.port or 80, timeout=timeout)
+    conn.connect()
+    box["sock"] = conn.sock  # a fine risposta http.client lo cede alla risposta: lo si tiene qui per troncarlo
+    return conn
+
+
+def _send(conn: http.client.HTTPConnection, method: str, path: str, body: dict | None = None) -> http.client.HTTPResponse:
+    payload = None if body is None else json.dumps(body).encode()
+    conn.request(method, path, body=payload, headers={"Content-Type": "application/json"} if payload else {})
+    resp = conn.getresponse()
+    if resp.status != 200:
+        raise OllamaError(f"HTTP {resp.status} su {path}")
+    return resp
+
+
+def _sever(sock: socket.socket | None) -> None:
+    """Chiude il socket sotto la lettura in corso (shutdown, che non attende i lock del buffer): il server vede
+    cadere il client e annulla la generazione. Vale anche in attesa delle intestazioni."""
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass  # gia' chiuso dall'altra parte
+
+
+def _stop_model(host: str, model: str) -> None:
+    """Arresto termico: scarica il modello (equivale a `ollama stop`) dopo aver troncato la richiesta in corso."""
+    try:
+        conn = _open(host, {}, SHORT_REQUEST_TIMEOUT_S)
+        try:
+            _send(conn, "POST", "/api/generate", {"model": model, "keep_alive": 0}).read()
+        finally:
+            conn.close()
+        log("thermal_model_stop", model=model)
+    except (OllamaError, OSError, http.client.HTTPException) as exc:
+        log("thermal_model_stop_failed", model=model, error=str(exc))
+
+
+def _event_text(line: bytes) -> tuple[str, bool]:
+    obj = json.loads(line)
+    msg = obj.get("message", {}) if isinstance(obj, dict) else None
+    if not isinstance(obj, dict) or not isinstance(msg, dict) or not isinstance(msg.get("content", ""), str):
+        raise OllamaError(f"evento di stream non valido: {line[:120]!r}")
+    if "error" in obj:
+        raise OllamaError(str(obj["error"]))
+    return msg.get("content", ""), bool(obj.get("done"))
+
+
+def _exchange(host: str, model: str, context: str, question: str, box: dict, cancel: threading.Event) -> None:
+    """Richiesta, stream e /api/ps: ogni errore di trasporto, stato HTTP o decodifica diventa OllamaError in `box`."""
+    try:
+        t0 = time.monotonic()
+        text, finished = "", False
+        conn = _open(host, box, REQUEST_TIMEOUT_S)
+        if cancel.is_set():  # arresto scattato durante connect(): nessuna inferenza deve partire
+            conn.close()
             return
+        resp = _send(conn, "POST", "/api/chat", {
+            "model": model, "stream": True, "think": False, "format": "json",
+            "messages": [{"role": "user", "content": PROMPT % (context, question)}],
+        })
+        for line in resp:
+            if cancel.is_set():
+                return
+            if line.strip():
+                chunk, done = _event_text(line)
+                text += chunk
+                finished = finished or done
+        conn.close()
+        if cancel.is_set():
+            return
+        if not finished:
+            raise OllamaError("stream chiuso senza done")
+        latency = time.monotonic() - t0
+        try:
+            reply = json.loads(text)
+        except ValueError:
+            reply = {}
+        conn = _open(host, box, SHORT_REQUEST_TIMEOUT_S)
+        if cancel.is_set():
+            conn.close()
+            return
+        body = json.loads(_send(conn, "GET", "/api/ps").read())
+        conn.close()
+        if not isinstance(body, dict) or not isinstance(body.get("models"), list):
+            raise OllamaError(f"/api/ps senza elenco models: {str(body)[:200]}")
+        # /api/ps riporta il nome canonico ("qwen3" -> "qwen3:latest").
+        names = {model, model + ":latest"}
+        ps = next((m for m in body["models"] if m.get("name") in names or m.get("model") in names), {})
+        box["result"] = (reply if isinstance(reply, dict) else {}, latency, {"size": ps.get("size"), "size_vram": ps.get("size_vram")})
+    except OllamaError as exc:
+        box["error"] = exc
+    except Exception as exc:  # noqa: BLE001 - il thread non deve morire senza esito: il round si scarta, i precedenti restano
+        log("exchange_failed", error=repr(exc))
+        box["error"] = OllamaError(f"{type(exc).__name__}: {exc}")
 
 
 def ollama_ask(host: str, model: str, context: str, question: str, hot: threading.Event) -> tuple[dict, float, dict]:
-    """Chiamata in streaming: a soglia termica si chiude la connessione, e Ollama interrompe la generazione."""
-    import requests
+    """La richiesta gira in un thread; questo thread sorveglia `hot` in ogni fase (connessione, intestazioni, stream)
+    e a soglia termica tronca la connessione, scarica il modello e ferma la prova."""
+    if hot.is_set():
+        raise ThermalStop(model)
+    box: dict = {}
+    cancel, finished = threading.Event(), threading.Event()
 
-    if hot.is_set():
-        raise ThermalStop(model)
-    t0 = time.monotonic()
-    text = ""
-    finished = False
-    done = threading.Event()
-    with requests.post(f"{host}/api/chat", stream=True, timeout=600, allow_redirects=False, json={
-        "model": model, "stream": True, "think": False, "format": "json",
-        "messages": [{"role": "user", "content": PROMPT % (context, question)}],
-    }) as r:
-        threading.Thread(target=_watch_hot, args=(r, hot, done), daemon=True).start()
+    def work() -> None:
         try:
-            r.raise_for_status()
-            for line in r.iter_lines():
-                if hot.is_set():
-                    raise ThermalStop(model)
-                if line:
-                    obj = json.loads(line)
-                    if "error" in obj:
-                        raise OllamaError(str(obj["error"]))
-                    text += obj.get("message", {}).get("content", "")
-                    finished = finished or bool(obj.get("done"))
-        except (requests.RequestException, OSError, ValueError) as exc:
-            if hot.is_set():
-                raise ThermalStop(model) from exc
-            raise OllamaError(str(exc)) from exc
+            _exchange(host, model, context, question, box, cancel)
         finally:
-            done.set()
+            finished.set()
+
+    threading.Thread(target=work, daemon=True).start()
+    while not finished.wait(HOT_POLL_S):
+        if hot.is_set():
+            break
     if hot.is_set():
+        cancel.set()
+        _sever(box.get("sock"))
+        _stop_model(host, model)
         raise ThermalStop(model)
-    if not finished:
-        raise OllamaError("stream chiuso senza done")
-    latency = time.monotonic() - t0
-    try:
-        reply = json.loads(text)
-    except ValueError:
-        reply = {}
-    # /api/ps riporta il nome canonico ("qwen3" -> "qwen3:latest").
-    names = {model, model + ":latest"}
-    ps = next((m for m in requests.get(f"{host}/api/ps", timeout=30, allow_redirects=False).json().get("models", [])
-               if m.get("name") in names or m.get("model") in names), {})
-    return reply if isinstance(reply, dict) else {}, latency, {"size": ps.get("size"), "size_vram": ps.get("size_vram")}
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
 
 
 def cmd_questions(a) -> None:

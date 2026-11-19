@@ -119,3 +119,9 @@ def test_l_esito_non_segue_un_collegamento_simbolico_nello_scratch(tmp_path, mon
     res = run_with(tmp_path, monkeypatch, lambda *a: RIGHT)
     assert victim.read_text() == "da non toccare" and res["status"] == "COMPLETO"
     assert not (tmp_path / "result.json").is_symlink()
+
+
+def test_anche_l_esito_completo_dichiara_la_copertura_delle_domande(tmp_path, monkeypatch):
+    """Se il supervisore declassa un esito completo a PARZIALE, la copertura (tutte le domande) deve gia' esserci."""
+    res = run_with(tmp_path, monkeypatch, lambda *a: RIGHT)
+    assert res["decision"]["questions_evaluated"] == res["decision"]["questions_total"] == 3

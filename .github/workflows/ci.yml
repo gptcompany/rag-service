@@ -40,7 +40,7 @@ jobs:
       - name: Install test/runtime dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . pytest pytest-cov requests
+          python -m pip install -e . pytest pytest-cov requests pyyaml
 
       - name: Smoke setup CLI help
         run: python -m scripts.setup.main --help
@@ -50,7 +50,7 @@ jobs:
 
       - name: Extended lightweight suite
         run: |
-          pytest tests/test_raganything_service_api.py tests/test_raganything_service_security.py tests/test_setup_wizard.py --cov=scripts --cov-report=term --cov-report=json
+          pytest tests/test_raganything_service_api.py tests/test_raganything_service_security.py tests/test_setup_wizard.py tests/test_embedding_device.py tests/test_compose_limits.py --cov=scripts --cov-report=term --cov-report=json
 
       - name: Extract coverage percentage
         id: cov

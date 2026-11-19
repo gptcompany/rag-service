@@ -209,3 +209,39 @@ def test_uno_scarico_che_non_risponde_non_affama_gli_altri_modelli(monkeypatch):
         srv.shutdown()
         srv.server_close()
     assert sorted(calls) == ["a", "b"]
+
+
+def test_un_leader_zombie_con_thread_vivi_tiene_vivo_il_gruppo(tmp_path, monkeypatch):
+    """Su Linux il leader puo' essere zombie mentre altri suoi thread girano ancora: il gruppo non e' morto."""
+    (tmp_path / "100" / "task" / "100").mkdir(parents=True)
+    (tmp_path / "100" / "task" / "101").mkdir()
+    (tmp_path / "100" / "stat").write_text("100 (py) Z 1 77 77 0 -1 0\n")
+    (tmp_path / "100" / "task" / "100" / "stat").write_text("100 (py) Z 1 77 77 0 -1 0\n")
+    (tmp_path / "100" / "task" / "101" / "stat").write_text("101 (py) S 1 77 77 0 -1 0\n")
+    monkeypatch.setattr(ts, "PROC", tmp_path)
+    assert ts._group_alive(77) is True
+    (tmp_path / "100" / "task" / "101" / "stat").write_text("101 (py) Z 1 77 77 0 -1 0\n")
+    assert ts._group_alive(77) is False
+
+
+def test_uno_stderr_bloccato_non_ferma_arresto_e_scarico(tmp_path, monkeypatch):
+    """Pipe piena e lettore fermo: print() non solleva, aspetta. Il registro e' diagnostica e non puo' trattenere la sicurezza."""
+    release = threading.Event()
+
+    class Stalled:
+        def write(self, text):
+            release.wait(30)
+
+        def flush(self):
+            pass
+
+    pids, unloaded = tmp_path / "pids", []
+    monkeypatch.setattr(sys, "stderr", Stalled())
+    monkeypatch.setattr(ts, "LOG_WAIT_S", 0.2)
+    t0 = time.monotonic()
+    try:
+        out = ts.supervise([sys.executable, "-c", SPAWNER, str(pids)], FakeSensors(lambda n: HOT if pids.exists() else cool()), lambda: unloaded.append(1))
+    finally:
+        release.set()
+    assert out.code == ts.EXIT_THERMAL and unloaded == [1] and time.monotonic() - t0 < 10
+    assert all(gone(int(p)) for p in pids.read_text().split())

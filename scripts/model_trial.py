@@ -250,6 +250,14 @@ class Sensors:
         self.thread.join()
 
 
+def append_durable(path: Path, record: dict) -> None:
+    """Una riga JSON per record, scritta per intero (il buffer completa le scritture parziali) e sincronizzata su disco."""
+    with path.open("ab") as fh:
+        fh.write((json.dumps(record, sort_keys=True) + "\n").encode())
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
 def guard_ok(cmd: list[str]) -> bool:
     return subprocess.run(cmd, capture_output=True, check=False).returncode == 0
 
@@ -455,6 +463,7 @@ def cmd_run(a) -> None:
         raise SystemExit(f"candidati duplicati: {a.models}")
     scratch = check_scratch(Path(a.scratch))
     (scratch / "result.json").unlink(missing_ok=True)  # un esito vecchio non deve passare per quello di questa prova
+    (scratch / "rounds.jsonl").unlink(missing_ok=True)
     qs = [json.loads(line) for line in (scratch / "questions.jsonl").read_text().splitlines()]
     meta = scratch / "retrieval.json"
     fingerprint = hashlib.sha1((scratch / "questions.jsonl").read_bytes()).hexdigest()
@@ -475,54 +484,65 @@ def cmd_run(a) -> None:
     vram = dict.fromkeys(a.models, 0)
     latency: dict[str, list[float]] = {m: [] for m in a.models}
     guard = a.guard_cmd.split()
-    stop_reason = "domande finite"
+    stop_reason = "prova non completata"
     rounds_done = 0
-    with Sensors() as sensors:
-        for paper in rounds:
-            if not guard_ok(guard):
-                stop_reason = "dell_guard rifiuta"
-                break
-            tally = {m: [0, 0, True, 0, []] for m in a.models}  # k, n, resident, vram, latencies
-            try:
-                for model in a.models:
-                    for q in by_paper[paper]:
-                        reply, secs, ps = ollama_ask(a.ollama_host, model, ctx[q["id"]], q["question"], sensors.hot)
-                        ok = is_correct(q, reply)
-                        t = tally[model]
-                        t[0] += ok
-                        t[1] += 1
-                        t[2] = t[2] and bool(ps["size"]) and ps["size_vram"] == ps["size"]
-                        t[3] = max(t[3], ps["size_vram"] or 0)
-                        t[4].append(secs)
-                        log("answer", model=model, qid=q["id"], correct=ok, latency=round(secs, 2), **ps)
-            except ThermalStop:
-                stop_reason = "soglia termica (round incompleto scartato)"
-                break
-            except OllamaError as exc:
-                log("ollama_error", error=str(exc))
-                stop_reason = f"errore ollama (round incompleto scartato): {exc}"
-                break
-            if sensors.hot.is_set():
-                stop_reason = "soglia termica"
-                break
-            # Si fondono solo i round completi per tutti i candidati: nessun confronto su n diseguali.
-            rounds_done += 1
-            for m, (k, n, res, v, lat) in tally.items():
-                scores[m] = (scores[m][0] + k, scores[m][1] + n)
-                resident[m] = resident[m] and res
-                vram[m] = max(vram[m], v)
-                latency[m] += lat
-    admitted = {m for m in a.models if rounds_done and resident[m] and vram[m]}
-    result = {
-        "stop_reason": stop_reason, "rounds_completed": rounds_done, "scores": scores,
-        "method": {"prior": f"Beta({PRIOR_CORRECT}, {PRIOR_WRONG})", "mc_samples": MC_SAMPLES, "mc_seed": MC_SEED},
-        "admitted": sorted(admitted), "vram": vram,
-        "latency_mean_s": {m: sum(v) / len(v) for m, v in latency.items() if v},
-        "peak_vram_mib": sensors.peak_vram_mib, "peak_gpu_c": sensors.peak_gpu_c, "peak_cpu_c": sensors.peak_cpu_c,
-        "decision": pick_winner(scores, vram, admitted),
-    }
-    (scratch / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True))
-    log("result", **result["decision"], stop_reason=stop_reason)
+    sensors = Sensors()
+    try:
+        with sensors:
+            for paper in rounds:
+                if not guard_ok(guard):
+                    stop_reason = "dell_guard rifiuta"
+                    break
+                tally = {m: [0, 0, True, 0, []] for m in a.models}  # k, n, resident, vram, latencies
+                try:
+                    for model in a.models:
+                        for q in by_paper[paper]:
+                            reply, secs, ps = ollama_ask(a.ollama_host, model, ctx[q["id"]], q["question"], sensors.hot)
+                            ok = is_correct(q, reply)
+                            t = tally[model]
+                            t[0] += ok
+                            t[1] += 1
+                            t[2] = t[2] and bool(ps["size"]) and ps["size_vram"] == ps["size"]
+                            t[3] = max(t[3], ps["size_vram"] or 0)
+                            t[4].append(secs)
+                            log("answer", model=model, qid=q["id"], correct=ok, latency=round(secs, 2), **ps)
+                except ThermalStop:
+                    stop_reason = "soglia termica (round incompleto scartato)"
+                    break
+                except OllamaError as exc:
+                    log("ollama_error", error=str(exc))
+                    stop_reason = f"errore ollama (round incompleto scartato): {exc}"
+                    break
+                if sensors.hot.is_set():
+                    stop_reason = "soglia termica"
+                    break
+                # Si fondono solo i round completi per tutti i candidati: nessun confronto su n diseguali.
+                # Il round e' su disco prima del successivo: nessun errore posteriore lo cancella.
+                append_durable(scratch / "rounds.jsonl", {"paper": paper, "tally": tally})
+                rounds_done += 1
+                for m, (k, n, res, v, lat) in tally.items():
+                    scores[m] = (scores[m][0] + k, scores[m][1] + n)
+                    resident[m] = resident[m] and res
+                    vram[m] = max(vram[m], v)
+                    latency[m] += lat
+            else:
+                stop_reason = "domande finite"
+    except Exception as exc:  # difetto imprevisto: l'esito dei round completi resta scritto, poi l'errore risale
+        stop_reason = f"eccezione non prevista dopo {rounds_done} round: {exc!r}"
+        log("run_crashed", error=repr(exc), rounds_completed=rounds_done)
+        raise
+    finally:
+        admitted = {m for m in a.models if rounds_done and resident[m] and vram[m]}
+        result = {
+            "stop_reason": stop_reason, "rounds_completed": rounds_done, "scores": scores,
+            "method": {"prior": f"Beta({PRIOR_CORRECT}, {PRIOR_WRONG})", "mc_samples": MC_SAMPLES, "mc_seed": MC_SEED},
+            "admitted": sorted(admitted), "vram": vram,
+            "latency_mean_s": {m: sum(v) / len(v) for m, v in latency.items() if v},
+            "peak_vram_mib": sensors.peak_vram_mib, "peak_gpu_c": sensors.peak_gpu_c, "peak_cpu_c": sensors.peak_cpu_c,
+            "decision": pick_winner(scores, vram, admitted),
+        }
+        (scratch / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True))
+        log("result", **result["decision"], stop_reason=stop_reason)
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -156,7 +156,11 @@ def terminate_group(proc: subprocess.Popen) -> str:
         os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    proc.wait()
+    try:
+        proc.wait(TERM_GRACE_S)  # un leader in I/O non interrompibile non deve impedire lo scarico dei modelli
+    except subprocess.TimeoutExpired:
+        log("child_exit_unconfirmed", pid=proc.pid)
+        return "SIGKILL_UNCONFIRMED"
     return "SIGKILL"
 
 
@@ -181,12 +185,19 @@ def _unload(host: str) -> None:
     except (OSError, ValueError, http.client.HTTPException) as exc:
         log("thermal_model_stop_failed", error=f"/api/ps: {exc}")
         return
-    for name in models:
+    def stop(name: str) -> None:
         try:
             status = _ollama(host, "POST", "/api/generate", {"model": name, "keep_alive": 0})[0]
             log("thermal_model_stop" if status == 200 else "thermal_model_stop_failed", model=name, status=status)
         except (OSError, http.client.HTTPException) as exc:
             log("thermal_model_stop_failed", model=name, error=str(exc))
+
+    # Un thread per modello: uno scarico che non risponde non consuma il tempo degli altri.
+    threads = [threading.Thread(target=stop, args=(name,), daemon=True) for name in models]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
 
 def unload_models(host: str) -> None:
@@ -199,14 +210,11 @@ def unload_models(host: str) -> None:
         log("thermal_model_stop_failed", error=f"scarico non concluso entro {UNLOAD_TIMEOUT_S} s")
 
 
-def _interrupt(signum, frame) -> None:
-    raise KeyboardInterrupt
-
-
 def supervise(argv: list[str], sensors, unload, env: dict | None = None) -> Outcome:
     """Esegue `argv` sotto controllo termico. Il figlio parte solo dopo una lettura valida e sotto soglia.
-    Un SIGTERM al supervisore (scheduler, operatore) vale come Ctrl-C: il gruppo del figlio, che sta in una sessione
-    propria e non lo riceverebbe, viene terminato e l'interruzione risale."""
+    Un SIGTERM o SIGINT al supervisore (scheduler, operatore) vale come Ctrl-C: il gruppo del figlio, che sta in una
+    sessione propria e non lo riceverebbe, viene terminato e l'interruzione risale. Un segnale che arriva prima che il
+    figlio sia registrato per la pulizia resta in sospeso e scatta appena lo e'; durante pulizia e scarico e' ignorato."""
     try:
         first = sensors.read()
     except SensorError as exc:
@@ -215,11 +223,22 @@ def supervise(argv: list[str], sensors, unload, env: dict | None = None) -> Outc
     if _hot(sensors, first):
         log("preflight_hot", readings=first, limits=sensors.limits)
         return Outcome(EXIT_PREFLIGHT, None, sensors.peaks)
-    previous = signal.signal(signal.SIGTERM, _interrupt)
+    armed, pending = [False], [False]
+
+    def interrupt(signum, frame) -> None:
+        if not armed[0]:
+            pending[0] = True
+            return
+        raise KeyboardInterrupt
+
+    previous = {sig: signal.signal(sig, interrupt) for sig in (signal.SIGTERM, signal.SIGINT)}
     tripped, how = None, ""
     try:
         proc = subprocess.Popen(argv, env=env, start_new_session=True)
         try:
+            armed[0] = True
+            if pending[0]:
+                raise KeyboardInterrupt
             log("child_started", pid=proc.pid, limits=sensors.limits, readings=first)
             while proc.poll() is None:
                 try:
@@ -231,13 +250,15 @@ def supervise(argv: list[str], sensors, unload, env: dict | None = None) -> Outc
                     tripped = {"reason": "thermal_limit", "readings": readings}
                     break
         finally:  # anche su KeyboardInterrupt: nessun gruppo orfano in giro
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)  # un secondo SIGTERM non deve interrompere la pulizia
+            for sig in previous:
+                signal.signal(sig, signal.SIG_IGN)  # un secondo segnale non deve interrompere pulizia e scarico
             if tripped or _group_alive(proc.pid):
                 how = terminate_group(proc)
+        if tripped:
+            log("thermal_stop", **tripped, limits=sensors.limits, how=how)
+            unload()
+            return Outcome(EXIT_THERMAL, tripped, sensors.peaks, how)
+        return Outcome(proc.returncode, None, sensors.peaks, how)
     finally:
-        signal.signal(signal.SIGTERM, previous)
-    if tripped:
-        log("thermal_stop", **tripped, limits=sensors.limits, how=how)
-        unload()
-        return Outcome(EXIT_THERMAL, tripped, sensors.peaks, how)
-    return Outcome(proc.returncode, None, sensors.peaks, how)
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)

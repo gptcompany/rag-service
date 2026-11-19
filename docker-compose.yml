@@ -28,9 +28,7 @@ services:
       - PARSER=docling
       - RAG_WORKING_DIR=/app/data/rag_knowledge_base
       - RAG_HOST=127.0.0.1
-      # Unica fonte versionata del modello (esito della prova modelli, fase 2). Letterale e non
-      # ${...}: un RAG_OLLAMA_MODEL cifrato da dotenvx nel .env finirebbe nel container come cifrato.
-      - RAG_OLLAMA_MODEL=qwen3:8b
+      # Nessun RAG_OLLAMA_MODEL qui: l'unica fonte e' il .env (dotenvx) scritto dal wizard.
       - OLLAMA_HOST=${RAG_OLLAMA_HOST:-http://127.0.0.1:11434}
 
 volumes:

@@ -26,6 +26,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -256,6 +257,18 @@ def append_durable(path: Path, record: dict) -> None:
         fh.write((json.dumps(record, sort_keys=True) + "\n").encode())
         fh.flush()
         os.fsync(fh.fileno())
+
+
+def write_json_atomic(path: Path, obj: dict) -> None:
+    """File temporaneo creato in modo esclusivo (mkstemp: mai un nome prevedibile, mai un symlink seguito), poi rename atomico."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(obj, indent=2, sort_keys=True))
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def guard_ok(cmd: list[str]) -> bool:
@@ -501,9 +514,7 @@ def cmd_run(a) -> None:
             "peak_vram_mib": sensors.peak_vram_mib, "peak_gpu_c": sensors.peak_gpu_c, "peak_cpu_c": sensors.peak_cpu_c,
             "decision": decision,
         }
-        tmp = scratch / "result.json.tmp"
-        tmp.write_text(json.dumps(result, indent=2, sort_keys=True))
-        os.replace(tmp, scratch / "result.json")
+        write_json_atomic(scratch / "result.json", result)
         return result
 
     complete = finished = False

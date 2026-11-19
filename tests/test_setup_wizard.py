@@ -681,9 +681,10 @@ class TestConfigStep:
         assert result is True
         assert mock_set.call_count >= 8  # At least 8 env vars set
 
-    def test_external_compose_template_supports_linux_host_gateway(self):
+    def test_external_compose_template_uses_host_network_on_loopback(self):
         from scripts.setup._config import COMPOSE_EXTERNAL_TEMPLATE
-        assert "host.docker.internal:host-gateway" in COMPOSE_EXTERNAL_TEMPLATE
+        assert "network_mode: host" in COMPOSE_EXTERNAL_TEMPLATE
+        assert "host.docker.internal" not in COMPOSE_EXTERNAL_TEMPLATE
 
     @patch("scripts.setup._config.get_env", return_value=None)
     @patch("scripts.setup._config.set_env", return_value=True)

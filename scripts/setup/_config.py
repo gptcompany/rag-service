@@ -54,17 +54,19 @@ COMPOSE_EXTERNAL_TEMPLATE = """\
 services:
   rag:
     build: .
-    ports:
-      - "${RAG_PORT:-8767}:${RAG_PORT:-8767}"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    network_mode: host
+    # Limite di isolamento (decisione limiti-risorse-calcolo-agenti), niente swap.
+    mem_limit: 4g
+    memswap_limit: 4g
+    restart: unless-stopped
     volumes:
       - ./.env:/app/.env:ro
       - ./.env.keys:/app/.env.keys:ro
       - huggingface_cache:/root/.cache/huggingface
       - ./data:/app/data
     environment:
-      - OLLAMA_HOST=${RAG_OLLAMA_HOST:-http://host.docker.internal:11434}
+      - RAG_HOST=127.0.0.1
+      - OLLAMA_HOST=${RAG_OLLAMA_HOST:-http://127.0.0.1:11434}
 
 volumes:
   huggingface_cache:
@@ -75,13 +77,18 @@ services:
   rag:
     build: .
     ports:
-      - "${RAG_PORT:-8767}:${RAG_PORT:-8767}"
+      - "127.0.0.1:${RAG_PORT:-8767}:${RAG_PORT:-8767}"
+    # Limite di isolamento (decisione limiti-risorse-calcolo-agenti), niente swap.
+    mem_limit: 4g
+    memswap_limit: 4g
+    restart: unless-stopped
     volumes:
       - ./.env:/app/.env:ro
       - ./.env.keys:/app/.env.keys:ro
       - huggingface_cache:/root/.cache/huggingface
       - ./data:/app/data
     environment:
+      - RAG_HOST=0.0.0.0
       - OLLAMA_HOST=http://ollama:11434
     depends_on:
       - ollama

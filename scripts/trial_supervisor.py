@@ -45,12 +45,15 @@ def gpu_slowdown_limit() -> float:
 
 
 def cpu_limit() -> tuple[Path, float]:
-    """(file temp1_input, soglia in gradi): temp1_max del coretemp, come dell_guard."""
+    """(file temp1_input, soglia in gradi): temp1_max del coretemp, come dell_guard. Un solo pacchetto: con piu' coretemp
+    se ne leggerebbe uno e gli altri potrebbero superare la propria soglia senza che nessuno se ne accorga (fail-closed)."""
     try:
-        for hw in sorted(HWMON.glob("hwmon*")):
-            if (hw / "name").read_text().strip() == "coretemp":
-                return hw / "temp1_input", _positive(int((hw / "temp1_max").read_text()) / 1000, "coretemp temp1_max")
-    except (OSError, ValueError) as exc:
+        found = [hw for hw in sorted(HWMON.glob("hwmon*")) if (hw / "name").read_text().strip() == "coretemp"]
+        if len(found) > 1:
+            raise SensorError(f"{len(found)} pacchetti coretemp: se ne legge uno solo, prova non avviata")
+        if found:
+            return found[0] / "temp1_input", _positive(int((found[0] / "temp1_max").read_text()) / 1000, "coretemp temp1_max")
+    except (OSError, ValueError, OverflowError) as exc:
         raise SensorError(f"coretemp temp1_max: {exc}") from exc
     raise SensorError("coretemp assente")
 
@@ -66,12 +69,15 @@ class Sensors:
     def read(self) -> dict:
         try:
             out = _nvidia_smi("--query-gpu=memory.used,temperature.gpu", "--format=csv,noheader,nounits").strip()
-            mem, gpu = (int(x) for x in out.split(","))  # nounits: due interi; un decimale o un esponente e' un output corrotto
+            fields = re.fullmatch(r"(\d+), (\d+)", out)  # nounits: due interi decimali; underscore, segni o esponenti sono output corrotto
+            if not fields:
+                raise ValueError(f"output di nvidia-smi inatteso: {out[:80]!r}")
+            mem, gpu = int(fields[1]), int(fields[2])
             cpu = int(self.cpu_input.read_text()) / 1000
-        except (OSError, ValueError) as exc:
+            if not all(math.isfinite(v) and v >= 0 for v in (mem, gpu, cpu)):
+                raise ValueError(f"lettura fuori dominio: vram={mem} gpu={gpu} cpu={cpu}")
+        except (OSError, ValueError, OverflowError) as exc:
             raise SensorError(str(exc)) from exc
-        if not all(math.isfinite(v) and v >= 0 for v in (mem, gpu, cpu)):
-            raise SensorError(f"lettura fuori dominio: vram={mem} gpu={gpu} cpu={cpu}")
         self.peaks = {
             "vram_mib": max(self.peaks["vram_mib"], int(mem)),
             "gpu_c": max(self.peaks["gpu_c"], gpu),

@@ -288,6 +288,23 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "BAAI/bge-large-en-v1.5")
 EMBEDDING_DIM = int(os.getenv("RAG_EMBEDDING_DIM", "1024"))
 
+
+def _resolve_embedding_device() -> str | None:
+    """Device per SentenceTransformer da RAG_EMBEDDING_DEVICE (es. "cpu", "cuda").
+
+    Non impostato -> None: SentenceTransformer sceglie da solo (cuda se
+    torch.cuda.is_available(), poi mps, altrimenti cpu). Serve per tenere
+    bge-large sulla CPU e lasciare la VRAM al modello di generazione.
+    """
+    return os.getenv("RAG_EMBEDDING_DEVICE", "").strip() or None
+
+
+def _load_embedding_model(model_cls, name: str):
+    device = _resolve_embedding_device()
+    print(f"[RAG] Embedding device: {device or 'auto'}")
+    return model_cls(name, device=device)
+
+
 # LLM config
 OPENAI_MODEL = os.getenv("RAG_OPENAI_MODEL", "gpt-4o-mini")
 OLLAMA_MODEL = os.getenv("RAG_OLLAMA_MODEL", "qwen3:8b")
@@ -1266,7 +1283,7 @@ def get_rag_instance():
 
             # ===== LOCAL EMBEDDINGS (sentence-transformers) =====
             print(f"[RAG] Loading embedding model: {EMBEDDING_MODEL}...")
-            embed_model = SentenceTransformer(EMBEDDING_MODEL)
+            embed_model = _load_embedding_model(SentenceTransformer, EMBEDDING_MODEL)
 
             async def local_embed(texts):
                 """Generate embeddings using local sentence-transformers."""

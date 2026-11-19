@@ -296,6 +296,7 @@ If behind a trusted reverse proxy:
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama endpoint |
 | `RAG_OLLAMA_MODEL` | `qwen3:8b` | Ollama model |
 | `RAG_EMBEDDING_MODEL` | `BAAI/bge-large-en-v1.5` | Embedding model |
+| `RAG_EMBEDDING_DEVICE` | _(auto)_ | Device di SentenceTransformer (`cpu`, `cuda`); vuoto = automatico. Nell'immagine Docker torch è la build CPU, quindi `auto` = `cpu` |
 | `RAG_EMBEDDING_DIM` | `1024` | Embedding dimension |
 | `RAG_ENABLE_VISION` | `false` | Vision processing |
 | `RAG_ENABLE_RERANK` | `true` | Reranker toggle |

@@ -6,10 +6,17 @@ services:
         VERSION: ${RAG_VERSION:-unknown}
         COMMIT_SHA: ${RAG_COMMIT_SHA:-unknown}
         BUILD_AT: ${RAG_BUILD_AT:-unknown}
-    ports:
-      - "${RAG_PORT:-8767}:${RAG_PORT:-8767}"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # Rete dell'host (decisione dell'operatore): niente ports/extra_hosts; il
+    # servizio ascolta solo su 127.0.0.1 (RAG_HOST) e raggiunge ollama via 127.0.0.1.
+    network_mode: host
+    # In rete host un'immagine precedente ignorerebbe RAG_HOST e ascolterebbe su 0.0.0.0: si ricostruisce sempre.
+    pull_policy: build
+    # LIMITE di isolamento (decisione limiti-risorse-calcolo-agenti), non un
+    # parametro scelto: provvisorio finche' non c'e' l'RSS di picco misurato
+    # nella prova modelli; poi si versiona il picco misurato. Niente swap.
+    mem_limit: 4g
+    memswap_limit: 4g
+    restart: unless-stopped
     volumes:
       - ./.env:/app/.env:ro
       - ./.env.keys:/app/.env.keys:ro
@@ -20,7 +27,11 @@ services:
       - RAG_DEFAULT_PARSER=docling
       - PARSER=docling
       - RAG_WORKING_DIR=/app/data/rag_knowledge_base
-      - OLLAMA_HOST=${RAG_OLLAMA_HOST:-http://host.docker.internal:11434}
+      - RAG_HOST=127.0.0.1
+      # Unica fonte versionata del modello (esito della prova modelli, fase 2). Letterale e non
+      # ${...}: un RAG_OLLAMA_MODEL cifrato da dotenvx nel .env finirebbe nel container come cifrato.
+      - RAG_OLLAMA_MODEL=qwen3:8b
+      - OLLAMA_HOST=${RAG_OLLAMA_HOST:-http://127.0.0.1:11434}
 
 volumes:
   huggingface_cache:

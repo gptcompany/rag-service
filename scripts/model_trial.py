@@ -253,6 +253,7 @@ def _event_text(line: bytes) -> tuple[str, bool]:
 def ollama_ask(host: str, model: str, context: str, question: str) -> tuple[dict, float, dict]:
     """Una domanda a un candidato e la sua residenza da /api/ps. Ogni errore di trasporto, stato HTTP o decodifica
     diventa OllamaError: il round si scarta, i precedenti restano."""
+    require_supervised()
     try:
         t0 = time.monotonic()
         text, finished = "", False
@@ -309,6 +310,8 @@ def cmd_retrieve(a) -> None:
     import requests
 
     scratch = check_scratch(Path(a.scratch))
+    http = requests.Session()
+    http.trust_env = False  # il controllo di loopback vale solo se la richiesta ci va davvero: niente proxy dall'ambiente
     key = read_secret_file(a.api_key_file) if a.api_key_file else ""
     out = scratch / "contexts.jsonl"
     questions = (scratch / "questions.jsonl").read_bytes()
@@ -327,7 +330,7 @@ def cmd_retrieve(a) -> None:
         if q["id"] in done:
             continue
         # Niente redirect: la chiave API non deve seguire un 3xx verso un altro host.
-        r = requests.post(f"{a.rag_url}/query", headers={"X-API-Key": key} if key else {}, allow_redirects=False, timeout=STALL_TIMEOUT_S,
+        r = http.post(f"{a.rag_url}/query", headers={"X-API-Key": key} if key else {}, allow_redirects=False, timeout=STALL_TIMEOUT_S,
                           json={"query": q["question"], "mode": a.mode, "context_only": True})
         r.raise_for_status()
         body = r.json()
@@ -449,6 +452,7 @@ def finalize_result(scratch: Path, out, stop_reason: str | None, limits: dict) -
     except (OSError, ValueError):
         result = {"status": "PARZIALE", "stop_reason": "il figlio non ha lasciato un esito", "rounds_completed": 0,
                   "decision": {"winner": None, "reason": "PARZIALE: il figlio non ha lasciato un esito"}}
+    stop_reason = stop_reason or (f"il figlio e' uscito con codice {out.code}" if out.code else None)
     if stop_reason:  # fermata dal supervisore (soglia, sensore perso, interruzione): nemmeno un esito completo fa piu' un vincitore
         result.update(status="PARZIALE", stop_reason=stop_reason)
         result["decision"] = {"winner": None, "reason": f"PARZIALE: {stop_reason}"}

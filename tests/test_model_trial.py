@@ -183,7 +183,8 @@ def test_cache_legata_all_insieme_di_domande(tmp_path, monkeypatch):
 def test_citazione_con_altro_paper_che_inizia_uguale_non_passa():
     q = {"answer": "x", "paper": "Smith"}
     assert not mt.is_correct(q, {"answer": "x", "paper": "Smith et al.pdf"})
-    assert mt.is_correct(q, {"answer": "x", "paper": "Smith.pdf, Other.pdf"})
+    assert mt.is_correct(q, {"answer": "x", "paper": ["Smith.pdf", "Other.pdf"]})
+    assert not mt.is_correct(q, {"answer": "x", "paper": "Smith.pdf, Other.pdf"})  # una stringa e' una sola citazione
 
 
 def test_prompt_identico_con_chiavi_diverse_viene_scartato():
@@ -260,3 +261,15 @@ def test_segmento_di_directory_non_vale_come_citazione():
     assert mt.is_correct(q, {"answer": "x", "paper": "/archive/Smith/Smith.pdf"})
     assert mt.is_correct(q, {"answer": "x", "paper": ["Other.pdf", "/archive/Smith.pdf"]})
     assert not mt.is_correct(q, {"answer": "x", "paper": ["/archive/Smith/Another paper.pdf"]})
+
+
+def test_nomi_di_paper_diversi_per_punteggiatura_non_si_confondono():
+    q = {"answer": "x", "paper": "Study 1"}
+    assert not mt.is_correct(q, {"answer": "x", "paper": "Study_1.pdf"})
+    assert mt.is_correct(q, {"answer": "x", "paper": "study 1.PDF"})
+
+
+def test_nome_file_con_virgola_e_una_sola_citazione():
+    assert mt.is_correct({"answer": "x", "paper": "Smith, Jr"}, {"answer": "x", "paper": "Smith, Jr.pdf"})
+    assert not mt.is_correct({"answer": "x", "paper": "Jr"}, {"answer": "x", "paper": "Smith, Jr.pdf"})
+    assert not mt.is_correct({"answer": "x", "paper": "Smith"}, {"answer": "x", "paper": "Smith, A Study.pdf"})

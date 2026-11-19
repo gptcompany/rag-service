@@ -114,3 +114,98 @@ def test_elenco_modelli_non_valido_si_registra_e_non_solleva(status, body, capsy
         srv.shutdown()
         srv.server_close()
     assert "thermal_model_stop_failed" in capsys.readouterr().err
+
+
+# ---- secondo giro della review interna ------------------------------------------------------------------------
+
+def _raising_handler(*_):
+    raise KeyboardInterrupt
+
+
+def test_un_annullamento_subito_dopo_la_nascita_del_figlio_non_lo_lascia_orfano(tmp_path, monkeypatch):
+    """Il segnale arriva dopo Popen e prima che il supervisore registri la pulizia: il figlio, in un'altra sessione, non cadrebbe."""
+    pids, real = tmp_path / "pids", ts.subprocess.Popen
+    made = []
+
+    def popen_then_signal(*args, **kwargs):
+        proc = real(*args, **kwargs)
+        made.append(proc.pid)
+        os.kill(os.getpid(), signal.SIGTERM)
+        return proc
+
+    monkeypatch.setattr(ts.subprocess, "Popen", popen_then_signal)
+    signal.signal(signal.SIGTERM, _raising_handler)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            ts.supervise([sys.executable, "-c", SPAWNER, str(pids)], FakeSensors(lambda n: cool()), lambda: None)
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    assert gone(made[0])
+
+
+def test_uno_sigterm_durante_lo_scarico_non_lo_interrompe(tmp_path):
+    pids, done = tmp_path / "pids", []
+
+    def unload():
+        os.kill(os.getpid(), signal.SIGTERM)  # lo scheduler insiste mentre i modelli si stanno scaricando
+        time.sleep(0.2)
+        done.append(1)
+
+    signal.signal(signal.SIGTERM, _raising_handler)
+    try:
+        out = ts.supervise([sys.executable, "-c", SPAWNER, str(pids)], FakeSensors(lambda n: HOT if pids.exists() else cool()), unload)
+    except KeyboardInterrupt:
+        pytest.fail("lo SIGTERM ha interrotto lo scarico dei modelli")
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    assert out.code == ts.EXIT_THERMAL and done == [1]
+
+
+def test_il_leader_che_non_muore_dopo_sigkill_non_blocca_il_supervisore(monkeypatch):
+    class Stuck:
+        pid = 4242_4242
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            assert timeout is not None, "attesa illimitata dopo SIGKILL"
+            raise ts.subprocess.TimeoutExpired("x", timeout)
+
+    monkeypatch.setattr(ts.os, "killpg", lambda *a: None)
+    monkeypatch.setattr(ts, "_group_alive", lambda pgid: True)
+    monkeypatch.setattr(ts, "TERM_GRACE_S", 0.1)
+    assert ts.terminate_group(Stuck()) == "SIGKILL_UNCONFIRMED"
+
+
+def test_uno_scarico_che_non_risponde_non_affama_gli_altri_modelli(monkeypatch):
+    calls = []
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            pass
+
+        def do_GET(self):
+            data = json.dumps({"models": [{"name": "a"}, {"name": "b"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            calls.append(body["model"])
+            if body["model"] == "a":
+                time.sleep(3)  # il primo non risponde: il secondo va tentato lo stesso
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    srv = _serve(H)
+    monkeypatch.setattr(ts, "UNLOAD_TIMEOUT_S", 1.0)
+    try:
+        ts.unload_models(f"http://127.0.0.1:{srv.server_port}")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert sorted(calls) == ["a", "b"]

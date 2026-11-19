@@ -159,7 +159,7 @@ def test_scarico_di_ogni_modello_residente_e_un_errore_non_ferma_gli_altri(capsy
     finally:
         srv.shutdown()
         srv.server_close()
-    assert calls == [{"model": "a", "keep_alive": 0}, {"model": "b", "keep_alive": 0}]
+    assert sorted(c["model"] for c in calls) == ["a", "b"] and all(c["keep_alive"] == 0 for c in calls)  # un thread per modello: ordine libero
     err = capsys.readouterr().err
     assert err.count("thermal_model_stop_failed") == 1 and err.count('"event": "thermal_model_stop"') == 1
 

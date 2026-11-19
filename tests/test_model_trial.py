@@ -238,3 +238,25 @@ def test_retrieve_senza_domande_fallisce(tmp_path, monkeypatch):
     (tmp_path / "questions.jsonl").write_text("")
     with pytest.raises(SystemExit, match="nessuna domanda"):
         mt.cmd_retrieve(argparse.Namespace(scratch=str(tmp_path), api_key_file=None, rag_url="u", mode="m"))
+
+
+@pytest.mark.parametrize("text", ["Fig. 2 shows the accuracy.", "Eq. 3 defines the loss.", "See Sec. 4 for the F1 score."])
+def test_riferimento_abbreviato_non_e_il_valore_della_metrica(text):
+    assert mt.questions_from_chunks({"a": {"file_path": "p.pdf", "content": text}}) == []
+
+
+@pytest.mark.parametrize("minus", ["\u2013", "\u2011", "\u2010", "\u2012", "\uff0d"])
+def test_ogni_meno_tipografico_resta_nel_valore_e_nel_punteggio(minus):
+    qs = mt.questions_from_chunks({"a": {"file_path": "p.pdf", "content": f"The Sharpe ratio was {minus}0.5 overall."}})
+    assert [q["answer"] for q in qs] == [f"{minus}0.5"]
+    assert minus not in qs[0]["question"] and "0.5" not in qs[0]["question"]
+    assert not mt.is_correct({"answer": "0.5", "paper": "p"}, {"answer": f"{minus}0.5", "paper": "p"})
+    assert mt.is_correct({"answer": "-0.5", "paper": "p"}, {"answer": f"{minus}0.5", "paper": "p"})
+
+
+def test_segmento_di_directory_non_vale_come_citazione():
+    q = {"answer": "x", "paper": "Smith"}
+    assert not mt.is_correct(q, {"answer": "x", "paper": "/archive/Smith/Another paper.pdf"})
+    assert mt.is_correct(q, {"answer": "x", "paper": "/archive/Smith/Smith.pdf"})
+    assert mt.is_correct(q, {"answer": "x", "paper": ["Other.pdf", "/archive/Smith.pdf"]})
+    assert not mt.is_correct(q, {"answer": "x", "paper": ["/archive/Smith/Another paper.pdf"]})

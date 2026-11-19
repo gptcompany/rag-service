@@ -26,6 +26,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -258,6 +259,18 @@ def append_durable(path: Path, record: dict) -> None:
         os.fsync(fh.fileno())
 
 
+def write_json_atomic(path: Path, obj: dict) -> None:
+    """File temporaneo creato in modo esclusivo (mkstemp: mai un nome prevedibile, mai un symlink seguito), poi rename atomico."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(obj, indent=2, sort_keys=True))
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def guard_ok(cmd: list[str]) -> bool:
     return subprocess.run(cmd, capture_output=True, check=False).returncode == 0
 
@@ -487,6 +500,24 @@ def cmd_run(a) -> None:
     stop_reason = "prova non completata"
     rounds_done = 0
     sensors = Sensors()
+
+    def snapshot(complete: bool) -> dict:
+        """Esito su disco (sostituzione atomica) dopo ogni round e in uscita: un processo ucciso lascia l'ultimo round intero.
+        Il vincitore esiste solo se tutte le domande sono state valutate per tutti i candidati ammessi."""
+        admitted = {m for m in a.models if rounds_done and resident[m] and vram[m]}
+        coverage = {"questions_evaluated": scores[a.models[0]][1], "questions_total": sum(len(by_paper[p]) for p in rounds)}
+        decision = {**pick_winner(scores, vram, admitted), **coverage} if complete else {"winner": None, "reason": f"PARZIALE: {stop_reason}", **coverage}
+        result = {
+            "status": "COMPLETO" if complete else "PARZIALE", "stop_reason": stop_reason, "rounds_completed": rounds_done,
+            "scores": scores, "method": {"prior": f"Beta({PRIOR_CORRECT}, {PRIOR_WRONG})", "mc_samples": MC_SAMPLES, "mc_seed": MC_SEED},
+            "admitted": sorted(admitted), "vram": vram, "latency_mean_s": {m: sum(v) / len(v) for m, v in latency.items() if v},
+            "peak_vram_mib": sensors.peak_vram_mib, "peak_gpu_c": sensors.peak_gpu_c, "peak_cpu_c": sensors.peak_cpu_c,
+            "decision": decision,
+        }
+        write_json_atomic(scratch / "result.json", result)
+        return result
+
+    complete = finished = False
     try:
         with sensors:
             for paper in rounds:
@@ -525,23 +556,20 @@ def cmd_run(a) -> None:
                     resident[m] = resident[m] and res
                     vram[m] = max(vram[m], v)
                     latency[m] += lat
+                stop_reason = f"in corso: round {rounds_done}/{len(rounds)} completato"
+                snapshot(False)
             else:
-                stop_reason = "domande finite"
+                stop_reason, finished = "domande finite", rounds_done > 0
+        complete = finished  # solo a sensori chiusi: un'interruzione durante la chiusura non lascia un vincitore
     except Exception as exc:  # difetto imprevisto: l'esito dei round completi resta scritto, poi l'errore risale
         stop_reason = f"eccezione non prevista dopo {rounds_done} round: {exc!r}"
         log("run_crashed", error=repr(exc), rounds_completed=rounds_done)
         raise
+    except BaseException:  # interruzione dell'operatore (SIGINT/SIGTERM): esito parziale, nessun vincitore
+        stop_reason = f"interrotta dopo {rounds_done} round"
+        raise
     finally:
-        admitted = {m for m in a.models if rounds_done and resident[m] and vram[m]}
-        result = {
-            "stop_reason": stop_reason, "rounds_completed": rounds_done, "scores": scores,
-            "method": {"prior": f"Beta({PRIOR_CORRECT}, {PRIOR_WRONG})", "mc_samples": MC_SAMPLES, "mc_seed": MC_SEED},
-            "admitted": sorted(admitted), "vram": vram,
-            "latency_mean_s": {m: sum(v) / len(v) for m, v in latency.items() if v},
-            "peak_vram_mib": sensors.peak_vram_mib, "peak_gpu_c": sensors.peak_gpu_c, "peak_cpu_c": sensors.peak_cpu_c,
-            "decision": pick_winner(scores, vram, admitted),
-        }
-        (scratch / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True))
+        result = snapshot(complete)
         log("result", **result["decision"], stop_reason=stop_reason)
 
 

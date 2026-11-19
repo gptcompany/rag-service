@@ -188,7 +188,8 @@ def test_ollama_che_non_manda_un_byte_per_il_limite_di_risorsa_e_un_errore_del_r
     assert time.monotonic() - t0 < 3
 
 
-def test_il_retrieve_ha_il_limite_di_stallo(tmp_path, monkeypatch):
+def test_il_retrieve_ha_il_limite_di_stallo_e_ignora_i_proxy_dell_ambiente(tmp_path, monkeypatch):
+    """Il controllo di loopback vale solo se la richiesta va davvero li': niente proxy ambientali, niente redirect."""
     import requests
 
     seen = {}
@@ -196,15 +197,15 @@ def test_il_retrieve_ha_il_limite_di_stallo(tmp_path, monkeypatch):
     class Stop(Exception):
         pass
 
-    def post(*args, **kwargs):
-        seen.update(kwargs)
+    def post(self, *args, **kwargs):
+        seen.update(kwargs, trust_env=self.trust_env)
         raise Stop
 
-    monkeypatch.setattr(requests, "post", post)
+    monkeypatch.setattr(requests.Session, "post", post)
     monkeypatch.setattr(mt, "SCRATCH_ROOT", tmp_path)
     (tmp_path / "questions.jsonl").write_text(json.dumps({"id": "q1", "paper": "p", "answer": "x", "question": "?"}) + "\n")
     a = _args(tmp_path)
     a.rag_url, a.api_key_file, a.mode = "http://127.0.0.1:1", None, "hybrid"
     with pytest.raises(Stop):
         mt.cmd_retrieve(a)
-    assert seen["timeout"] == mt.STALL_TIMEOUT_S
+    assert seen["timeout"] == mt.STALL_TIMEOUT_S and seen["trust_env"] is False and seen["allow_redirects"] is False

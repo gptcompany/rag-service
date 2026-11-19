@@ -207,3 +207,17 @@ def test_lo_script_parte_anche_lanciato_direttamente():
     """Lanciato come script (`python scripts/model_trial.py`) il modulo del supervisore va trovato lo stesso."""
     done = subprocess.run([sys.executable, str(REPO / "scripts" / "model_trial.py"), "--help"], capture_output=True, text=True, check=False)
     assert done.returncode == 0, done.stderr
+
+
+def test_ollama_ask_chiamato_direttamente_senza_supervisore_non_apre_connessioni(monkeypatch):
+    monkeypatch.delenv("F775_SUPERVISOR_PID")
+    monkeypatch.setattr(socket.socket, "connect", lambda *a: pytest.fail("connessione fuori dal figlio supervisionato"))
+    with pytest.raises(SystemExit, match="supervisore"):
+        mt.ollama_ask("http://127.0.0.1:11434", "a", "c", "q")
+
+
+def test_un_figlio_uscito_male_non_conferma_un_vincitore(tmp_path):
+    done = {"status": "COMPLETO", "stop_reason": "domande finite", "rounds_completed": 3, "decision": {"winner": "a", "reason": "argmax"}}
+    (tmp_path / "result.json").write_text(json.dumps(done))
+    mt.finalize_result(tmp_path, ts.Outcome(-9, None, {}, ""), None, {})  # il figlio ha scritto l'esito ed e' morto prima di uscire
+    assert result(tmp_path)["status"] == "PARZIALE" and result(tmp_path)["decision"]["winner"] is None

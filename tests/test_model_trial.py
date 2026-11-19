@@ -85,7 +85,7 @@ def test_retrieve_non_mette_in_cache_un_contesto_fallito(tmp_path, monkeypatch):
         def json(self):
             return {"success": False, "error": "Internal query error"}
 
-    monkeypatch.setattr(requests, "post", lambda *a, **k: R())
+    monkeypatch.setattr(requests.Session, "post", lambda self, *a, **k: R())
     with pytest.raises(SystemExit, match="1 domande senza contesto"):
         mt.cmd_retrieve(argparse.Namespace(scratch=str(tmp_path), api_key_file=None, rag_url="u", mode="hybrid"))
     assert not (tmp_path / "contexts.jsonl").exists()
@@ -151,7 +151,7 @@ def test_retrieve_scarta_contesto_null(tmp_path, monkeypatch):
         def json(self):
             return {"success": True, "context": None}
 
-    monkeypatch.setattr(requests, "post", lambda *a, **k: R())
+    monkeypatch.setattr(requests.Session, "post", lambda self, *a, **k: R())
     with pytest.raises(SystemExit, match="1 domande senza contesto"):
         mt.cmd_retrieve(argparse.Namespace(scratch=str(tmp_path), api_key_file=None, rag_url="u", mode="hybrid"))
     assert not (tmp_path / "contexts.jsonl").exists()
@@ -171,7 +171,7 @@ def test_cache_legata_all_insieme_di_domande(tmp_path, monkeypatch):
         def json(self):
             return {"success": True, "context": "ctx"}
 
-    monkeypatch.setattr(requests, "post", lambda *a, **k: R())
+    monkeypatch.setattr(requests.Session, "post", lambda self, *a, **k: R())
     args = argparse.Namespace(scratch=str(tmp_path), api_key_file=None, rag_url="u", mode="hybrid")
     (tmp_path / "questions.jsonl").write_text(json.dumps({"id": "q1", "question": "?"}) + "\n")
     mt.cmd_retrieve(args)
@@ -223,11 +223,11 @@ def test_retrieve_non_segue_i_redirect_con_la_chiave(tmp_path, monkeypatch):
         def json(self):
             return {"success": True, "context": "c"}
 
-    def post(*a, **k):
+    def post(self, *a, **k):
         seen.update(k)
         return R()
 
-    monkeypatch.setattr(requests, "post", post)
+    monkeypatch.setattr(requests.Session, "post", post)
     mt.cmd_retrieve(argparse.Namespace(scratch=str(tmp_path), api_key_file=str(tmp_path / "key"), rag_url="u", mode="m"))
     assert seen["allow_redirects"] is False
 

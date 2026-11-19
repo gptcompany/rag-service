@@ -30,7 +30,7 @@ def _nvidia_smi(*args: str) -> str:
     """Stdout di nvidia-smi, o SensorError se non parte, scade o esce con errore (un exit != 0 invalida anche l'output parsabile)."""
     try:
         done = subprocess.run(["nvidia-smi", *args], capture_output=True, text=True, check=False, timeout=SENSOR_READ_TIMEOUT_S)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, subprocess.TimeoutExpired, ValueError) as exc:  # ValueError: output non decodificabile
         raise SensorError(f"nvidia-smi {args[0]}: {exc}") from exc
     if done.returncode != 0:
         raise SensorError(f"nvidia-smi {args[0]}: exit {done.returncode}")
@@ -66,7 +66,7 @@ class Sensors:
     def read(self) -> dict:
         try:
             out = _nvidia_smi("--query-gpu=memory.used,temperature.gpu", "--format=csv,noheader,nounits").strip()
-            mem, gpu = (float(x) for x in out.split(","))
+            mem, gpu = (int(x) for x in out.split(","))  # nounits: due interi; un decimale o un esponente e' un output corrotto
             cpu = int(self.cpu_input.read_text()) / 1000
         except (OSError, ValueError) as exc:
             raise SensorError(str(exc)) from exc

@@ -15,7 +15,8 @@ from scripts import trial_supervisor as ts
 SPAWNER = (
     "import os, subprocess, sys, time\n"
     "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
-    "open(sys.argv[1], 'w').write(f'{os.getpid()} {g.pid}')\n"
+    "open(sys.argv[1] + '.tmp', 'w').write(f'{os.getpid()} {g.pid}')\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
     "time.sleep(60)\n"
 )
 IGNORES_TERM = "import signal, sys, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\nopen(sys.argv[1], 'w').write('up')\ntime.sleep(60)\n"

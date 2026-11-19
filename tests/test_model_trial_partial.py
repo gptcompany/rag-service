@@ -109,3 +109,13 @@ def test_interruzione_alla_chiusura_dei_sensori_non_lascia_un_vincitore(tmp_path
         mt.cmd_run(a)
     res = json.loads((tmp_path / "result.json").read_text())
     assert res["status"] == "PARZIALE" and res["decision"]["winner"] is None
+
+
+def test_l_esito_non_segue_un_collegamento_simbolico_nello_scratch(tmp_path, monkeypatch):
+    """Uno scratch riusato puo' contenere `result.json.tmp` come symlink verso un altro file: non va troncato."""
+    victim = tmp_path / "vittima.txt"
+    victim.write_text("da non toccare")
+    (tmp_path / "result.json.tmp").symlink_to(victim)
+    res = run_with(tmp_path, monkeypatch, lambda *a: RIGHT)
+    assert victim.read_text() == "da non toccare" and res["status"] == "COMPLETO"
+    assert not (tmp_path / "result.json").is_symlink()

@@ -249,7 +249,8 @@ def test_esito_vecchio_rimosso_all_avvio(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError):
         _setup_run(tmp_path, monkeypatch, ask)
-    assert not (tmp_path / "result.json").exists()
+    out = tmp_path / "result.json"  # l'esito vecchio e' sparito; ne resta al piu' uno di questa prova, senza vincitore
+    assert not out.exists() or json.loads(out.read_text())["decision"]["winner"] is None
 
 
 def test_run_rifiuta_contesti_di_altre_domande(tmp_path, monkeypatch):

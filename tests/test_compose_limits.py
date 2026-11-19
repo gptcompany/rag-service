@@ -35,9 +35,12 @@ def test_rete_host_con_bind_esplicito_su_loopback():
     assert "127.0.0.1:11434" in env["OLLAMA_HOST"] and "host.docker.internal" not in env["OLLAMA_HOST"]
 
 
-def test_modello_ollama_versionato_nel_compose():
-    env = dict(e.split("=", 1) for e in SERVICES["rag"]["environment"])
-    assert env["RAG_OLLAMA_MODEL"] == "qwen3:8b"
+def test_compose_non_fissa_il_modello_ollama():
+    """La scelta del wizard (RAG_OLLAMA_MODEL nel .env caricato da dotenvx) e' l'unica fonte: il compose non la sovrascrive."""
+    for name, svc in SERVICES.items():
+        env = dict(e.split("=", 1) for e in svc.get("environment", []))
+        assert not any("OLLAMA_MODEL" in k for k in env), name
+        assert "RAG_OLLAMA_MODEL" not in str(svc.get("env_file", "")), name
 
 
 def test_i_template_del_wizard_portano_le_stesse_salvaguardie_del_compose():

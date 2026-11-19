@@ -90,3 +90,25 @@ def test_output_di_nvidia_smi_non_decodificabile_blocca_soglia_e_lettura(monkeyp
     sensors = object.__new__(ts.Sensors)
     with pytest.raises(ts.SensorError):
         sensors.read()
+
+
+def test_piu_pacchetti_coretemp_bloccano_perche_ne_leggeremmo_uno_solo(tmp_path, monkeypatch):
+    for n in (1, 2):
+        hw = tmp_path / f"hwmon{n}"
+        hw.mkdir()
+        (hw / "name").write_text("coretemp\n")
+        (hw / "temp1_max").write_text("100000\n")
+    monkeypatch.setattr(ts, "HWMON", tmp_path)
+    with pytest.raises(ts.SensorError, match="coretemp"):
+        ts.cpu_limit()
+
+
+@pytest.mark.parametrize("out, cpu", [("812, 0_0\n", "50000\n"), ("812, 70\n", "9" * 400 + "\n"), ("812, " + "9" * 400 + "\n", "50000\n")],
+                         ids=["underscore", "cpu_enorme", "gpu_enorme"])
+def test_numeri_malformati_o_enormi_sono_un_errore_del_sensore(monkeypatch, tmp_path, out, cpu):
+    (tmp_path / "temp1_input").write_text(cpu)
+    sensors = object.__new__(ts.Sensors)
+    sensors.cpu_input, sensors.peaks = tmp_path / "temp1_input", {"vram_mib": 0, "gpu_c": 0.0, "cpu_c": 0.0}
+    monkeypatch.setattr(ts.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": out, "returncode": 0})())
+    with pytest.raises(ts.SensorError):
+        sensors.read()

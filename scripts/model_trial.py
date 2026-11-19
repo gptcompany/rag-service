@@ -29,10 +29,15 @@ from pathlib import Path
 SCRATCH_ROOT = Path("/media/sam/1TB/scratch/f775")
 
 
-_SENT = re.compile(r"(?<=[.!?])\s+")
-_NUM = re.compile(r"(?<![\w.])[-+\u2212]?\d+(?:\.\d+)?\s?%?")
+# Segni meno tipografici (trattini Unicode U+2010..2013, meno matematico U+2212, varianti small/fullwidth) -> "-".
+_MINUS = "\u2010\u2011\u2012\u2013\u2212\ufe63\uff0d"
+_MINUS_TO_ASCII = str.maketrans(dict.fromkeys(_MINUS, "-"))
+# Abbreviazioni di riferimento (Fig., Eq., ...): il punto non chiude la frase, altrimenti il numero resta solo.
+_ABBREV = ("Fig", "Figs", "Tab", "Tabs", "Sec", "Secs", "Eq", "Eqs", "App", "Ch")
+_SENT = re.compile("".join(rf"(?<!\b{a}\.)" for a in _ABBREV) + r"(?<=[.!?])\s+", re.IGNORECASE)
+_NUM = re.compile(rf"(?<![\w.])[-+{_MINUS}]?\d+(?:\.\d+)?\s?%?")
 _METRIC = re.compile(r"accuracy|F1|precision|recall|Sharpe|AUC|error|BLEU|loss|growth|return", re.IGNORECASE)
-_REF = re.compile(r"\b(?:Fig(?:ure)?s?|Tables?|Sections?|Eq(?:uation)?s?|Appendix|Chapter)\.?\s*\d", re.IGNORECASE)
+_REF = re.compile(r"\b(?:Fig(?:ure)?s?|Tab(?:le)?s?|Sec(?:tion)?s?|Eq(?:uation)?s?|App(?:endix)?|Ch(?:apter)?)\.?\s*\d", re.IGNORECASE)
 _DATASET = re.compile(r"\b(?:the|on|using)\s+((?:[A-Z][\w-]+)(?:\s[A-Z][\w-]+){0,2})\s(?:dataset|data set|benchmark)")
 _METHOD = re.compile(r"\b(?:using|via|by|with)\s+(?:the\s+)?((?:[A-Z][\w-]+)(?:\s[A-Z][\w-]+){0,2})\s(?:method|algorithm|model|estimator)")
 
@@ -57,7 +62,7 @@ def read_secret_file(path: str) -> str:
 
 
 def normalize(text: str) -> str:
-    text = unicodedata.normalize("NFKD", str(text).replace("\u2212", "-")).encode("ascii", "ignore").decode().lower()
+    text = unicodedata.normalize("NFKD", str(text).translate(_MINUS_TO_ASCII)).encode("ascii", "ignore").decode().lower()
     text = re.sub(r"\s+%", "%", text)
     return re.sub(r"[^a-z0-9.%+-]+", " ", text).strip().rstrip(".")
 
@@ -118,8 +123,10 @@ def is_correct(question: dict, reply: dict) -> bool:
     """Risposta uguale all'attesa dopo la normalizzazione (niente alternative aggiuntive, segno e unita' inclusi)
     e paper citato esatto (versione ignorata)."""
     expected = normalize(question["answer"])
-    raw = str(reply.get("paper", ""))
-    cited = {normalize(paper_key(raw))} | {normalize(paper_key(t)) for t in re.split(r"\s*[,;/]\s*", raw) if t}
+    raw = reply.get("paper", "")
+    # Ogni citazione intera si riduce al suo nome file prima del confronto: un segmento di directory non e' un paper.
+    items = raw if isinstance(raw, (list, tuple)) else re.split(r"\s*[,;]\s*", str(raw))
+    cited = {normalize(paper_key(t)) for t in items if str(t).strip()}
     return bool(expected) and normalize(reply.get("answer", "")) == expected and normalize(question["paper"]) in cited
 
 

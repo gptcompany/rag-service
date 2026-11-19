@@ -124,10 +124,11 @@ def is_correct(question: dict, reply: dict) -> bool:
     e paper citato esatto (versione ignorata)."""
     expected = normalize(question["answer"])
     raw = reply.get("paper", "")
+    # Una stringa e' UNA citazione (un nome file puo' contenere virgole); piu' paper solo come elenco JSON.
     # Ogni citazione intera si riduce al suo nome file prima del confronto: un segmento di directory non e' un paper.
-    items = raw if isinstance(raw, (list, tuple)) else re.split(r"\s*[,;]\s*", str(raw))
-    cited = {normalize(paper_key(t)) for t in items if str(t).strip()}
-    return bool(expected) and normalize(reply.get("answer", "")) == expected and normalize(question["paper"]) in cited
+    items = raw if isinstance(raw, (list, tuple)) else [raw]
+    cited = {paper_key(t).strip().casefold() for t in map(str, items) if t.strip()}
+    return bool(expected) and normalize(reply.get("answer", "")) == expected and paper_key(question["paper"]).strip().casefold() in cited
 
 
 def cmd_questions(a) -> None:

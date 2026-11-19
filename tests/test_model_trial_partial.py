@@ -73,3 +73,39 @@ def test_l_esito_parziale_e_su_disco_dopo_ogni_round_anche_se_il_processo_muore(
     run_with(tmp_path, monkeypatch, ask)
     assert seen[0] is None or seen[0]["rounds_completed"] == 0
     assert [(s["status"], s["rounds_completed"], s["decision"]["winner"]) for s in seen[1:]] == [("PARZIALE", 1, None), ("PARZIALE", 2, None)]
+
+
+def test_il_parziale_conta_domande_e_non_paper(tmp_path, monkeypatch):
+    """Due domande nel primo paper (completo) e una nel secondo (interrotto): 2 domande valutate su 3, non 1 su 2."""
+    import hashlib
+
+    a = write_scratch(tmp_path, monkeypatch, 3)
+    qs = [json.loads(line) for line in (tmp_path / "questions.jsonl").read_text().splitlines()]
+    first = min(["pA", "pB"], key=lambda p: hashlib.sha1(p.encode()).hexdigest())  # il paper che il sorteggio fa girare per primo
+    second = "pB" if first == "pA" else "pA"
+    for q, paper in zip(qs, [first, first, second]):
+        q["paper"] = paper
+    (tmp_path / "questions.jsonl").write_text("".join(json.dumps(q) + "\n" for q in qs))
+    (tmp_path / "retrieval.json").write_text(json.dumps({"questions_sha1": hashlib.sha1((tmp_path / "questions.jsonl").read_bytes()).hexdigest()}))
+    monkeypatch.setattr(mt, "ollama_ask", fail_at(3, mt.OllamaError("boom")))
+    mt.cmd_run(a)
+    res = json.loads((tmp_path / "result.json").read_text())
+    assert res["rounds_completed"] == 1
+    assert res["decision"]["questions_evaluated"] == 2 and res["decision"]["questions_total"] == 3
+
+
+def test_interruzione_alla_chiusura_dei_sensori_non_lascia_un_vincitore(tmp_path, monkeypatch):
+    """Ctrl-C mentre il contesto dei sensori si chiude: le domande erano finite, ma la prova non e' conclusa."""
+    from tests.test_model_trial_run import FakeSensors
+
+    class Closing(FakeSensors):
+        def __exit__(self, *exc):
+            raise KeyboardInterrupt
+
+    a = write_scratch(tmp_path, monkeypatch, 2)
+    monkeypatch.setattr(mt, "Sensors", Closing)
+    monkeypatch.setattr(mt, "ollama_ask", lambda *args: RIGHT)
+    with pytest.raises(KeyboardInterrupt):
+        mt.cmd_run(a)
+    res = json.loads((tmp_path / "result.json").read_text())
+    assert res["status"] == "PARZIALE" and res["decision"]["winner"] is None

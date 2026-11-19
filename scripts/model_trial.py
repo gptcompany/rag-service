@@ -21,6 +21,8 @@ file 0600 (RAG_API_KEY_FILE) e non viene mai stampata.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import ctypes
 import hashlib
 import http.client
 import json
@@ -416,13 +418,14 @@ def cmd_run(a) -> None:
             # Il round e' su disco prima del successivo: nessun errore posteriore lo cancella.
             # Disco e fusione sono un'unica unita': un SIGTERM/SIGINT che arriva qui aspetta la fine, cosi' il round e' contato
             # per tutti i candidati o per nessuno e l'esito parziale non lo mostra a meta'.
-            append_durable(scratch / "rounds.jsonl", {"paper": paper, "tally": tally})
-            for m, (k, n, res, v, lat) in tally.items():
-                scores[m] = (scores[m][0] + k, scores[m][1] + n)
-                resident[m] = resident[m] and res
-                vram[m] = max(vram[m], v)
-                latency[m] += lat
-            rounds_done += 1
+            with deferred_termination():
+                append_durable(scratch / "rounds.jsonl", {"paper": paper, "tally": tally})
+                for m, (k, n, res, v, lat) in tally.items():
+                    scores[m] = (scores[m][0] + k, scores[m][1] + n)
+                    resident[m] = resident[m] and res
+                    vram[m] = max(vram[m], v)
+                    latency[m] += lat
+                rounds_done += 1
             stop_reason = f"in corso: round {rounds_done}/{len(rounds)} completato"
             snapshot(False)
         else:
@@ -439,8 +442,38 @@ def cmd_run(a) -> None:
         log("result", **result["decision"], stop_reason=stop_reason)
 
 
+_DEFER = {"on": False, "signum": 0}
+
+
 def _terminated(signum, frame) -> None:
+    if _DEFER["on"]:  # sezione critica: il segnale si ricorda e si onora all'uscita
+        _DEFER["signum"] = signum
+        return
     raise SystemExit(128 + signum)  # attraversa i `finally`: il figlio scrive l'esito parziale prima di uscire
+
+
+@contextlib.contextmanager
+def deferred_termination():
+    """Il SIGTERM del supervisore che arriva dentro il blocco aspetta la fine del blocco. Lo stato e' del gestore, non della
+    maschera dei segnali di un thread: vale anche se il segnale lo riceve un thread nativo (NumPy)."""
+    _DEFER["on"] = True
+    try:
+        yield
+    finally:
+        _DEFER["on"] = False
+        signum, _DEFER["signum"] = _DEFER["signum"], 0
+        if signum:
+            raise SystemExit(128 + signum)
+
+
+def die_with_parent() -> None:
+    """Il figlio non sopravvive al supervisore (OOM killer o uccisione brutale: nessuna pulizia, e il figlio sta in un'altra
+    sessione): PR_SET_PDEATHSIG gli manda SIGTERM alla morte del padre. Solo Linux, come l'host della prova. Poi si
+    ricontrolla il padre: se e' morto prima della prctl il segnale non arriva piu'."""
+    if ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM) != 0:  # 1 = PR_SET_PDEATHSIG
+        raise SystemExit("prctl(PR_SET_PDEATHSIG) fallita: il figlio non puo' legarsi al supervisore")
+    if os.environ.get(ENV_SUPERVISOR) != str(os.getppid()):
+        raise SystemExit("il supervisore e' gia' uscito")
 
 
 def finalize_result(scratch: Path, out, stop_reason: str | None, limits: dict) -> None:
@@ -455,7 +488,8 @@ def finalize_result(scratch: Path, out, stop_reason: str | None, limits: dict) -
     stop_reason = stop_reason or (f"il figlio e' uscito con codice {out.code}" if out.code else None)
     if stop_reason:  # fermata dal supervisore (soglia, sensore perso, interruzione): nemmeno un esito completo fa piu' un vincitore
         result.update(status="PARZIALE", stop_reason=stop_reason)
-        result["decision"] = {"winner": None, "reason": f"PARZIALE: {stop_reason}"}
+        coverage = {k: v for k, v in result.get("decision", {}).items() if k in ("questions_evaluated", "questions_total")}
+        result["decision"] = {"winner": None, "reason": f"PARZIALE: {stop_reason}", **coverage}
     # La telemetria e' la conferma del supervisore: un esito senza non e' stato confermato (supervisore morto prima) e non vale.
     result["telemetry"] = {"peaks": out.peaks, "limits": limits, "tripped": out.tripped, "exit_code": out.code, "group_closed_by": out.how}
     write_json_atomic(path, result)
@@ -465,8 +499,9 @@ def run_supervised(a, raw: list[str]) -> int:
     """Il supervisore: legge i sensori, poi rilancia questo stesso script come figlio in un gruppo di processi proprio.
     Da qui NON parte nessuna chiamata a ollama, salvo lo scarico dei modelli all'arresto."""
     # Sensori e nvidia-smi sono locali: la prova ha senso (e il gate termico vale) solo se ollama gira qui.
-    if urlparse(a.ollama_host).hostname not in LOOPBACK:
-        raise SystemExit(f"ollama deve girare su questo host (telemetria locale): {a.ollama_host}")
+    for url in (a.ollama_host, getattr(a, "rag_url", a.ollama_host)):
+        if urlparse(url).hostname not in LOOPBACK:
+            raise SystemExit(f"ollama e rag-service devono girare su questo host (telemetria locale): {url}")
     scratch = check_scratch(Path(a.scratch))
     if a.cmd == "run":  # un esito vecchio non deve passare per quello di questa prova, nemmeno se il figlio non parte
         (scratch / "result.json").unlink(missing_ok=True)
@@ -517,6 +552,7 @@ def main(argv: list[str] | None = None) -> None:
     if a.cmd not in SUPERVISED:
         return a.fn(a)
     if os.environ.get(ENV_SUPERVISOR) == str(os.getppid()):  # siamo il figlio del supervisore
+        die_with_parent()
         signal.signal(signal.SIGTERM, _terminated)
         return a.fn(a)
     raise SystemExit(run_supervised(a, raw))

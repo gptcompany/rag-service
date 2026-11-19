@@ -39,8 +39,8 @@ def fail_at(call, exc):
 
 
 @pytest.mark.parametrize("exc, expect", [
-    (mt.ThermalStop("a"), None), (mt.OllamaError("boom"), None), (RuntimeError("difetto"), RuntimeError), (KeyboardInterrupt(), KeyboardInterrupt),
-], ids=["arresto_termico", "errore_ollama", "difetto_imprevisto", "interruzione"])
+    (mt.OllamaError("boom"), None), (RuntimeError("difetto"), RuntimeError), (KeyboardInterrupt(), KeyboardInterrupt),
+], ids=["errore_ollama", "difetto_imprevisto", "interruzione"])
 def test_round_parziali_non_dichiarano_alcun_vincitore(tmp_path, monkeypatch, exc, expect):
     res = run_with(tmp_path, monkeypatch, fail_at(2, exc), expect=expect)
     # Un round completo e un candidato interamente in GPU: i dati ci sono, ma le domande non sono finite.
@@ -92,23 +92,6 @@ def test_il_parziale_conta_domande_e_non_paper(tmp_path, monkeypatch):
     res = json.loads((tmp_path / "result.json").read_text())
     assert res["rounds_completed"] == 1
     assert res["decision"]["questions_evaluated"] == 2 and res["decision"]["questions_total"] == 3
-
-
-def test_interruzione_alla_chiusura_dei_sensori_non_lascia_un_vincitore(tmp_path, monkeypatch):
-    """Ctrl-C mentre il contesto dei sensori si chiude: le domande erano finite, ma la prova non e' conclusa."""
-    from tests.test_model_trial_run import FakeSensors
-
-    class Closing(FakeSensors):
-        def __exit__(self, *exc):
-            raise KeyboardInterrupt
-
-    a = write_scratch(tmp_path, monkeypatch, 2)
-    monkeypatch.setattr(mt, "Sensors", Closing)
-    monkeypatch.setattr(mt, "ollama_ask", lambda *args: RIGHT)
-    with pytest.raises(KeyboardInterrupt):
-        mt.cmd_run(a)
-    res = json.loads((tmp_path / "result.json").read_text())
-    assert res["status"] == "PARZIALE" and res["decision"]["winner"] is None
 
 
 def test_l_esito_non_segue_un_collegamento_simbolico_nello_scratch(tmp_path, monkeypatch):

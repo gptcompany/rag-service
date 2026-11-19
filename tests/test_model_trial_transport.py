@@ -1,7 +1,7 @@
 """Prova modelli (F-775): trasporto verso ollama su uno stack HTTP reale (server finto su 127.0.0.1).
 
-Arresto termico in ogni fase (connessione, attesa delle intestazioni, stream bloccato), errori di trasporto,
-stato HTTP e decodifica normalizzati in OllamaError.
+Errori di trasporto, stato HTTP e decodifica normalizzati in OllamaError. L'arresto termico non e' piu' qui:
+e' del supervisore di processo (tests/test_model_trial_supervised.py).
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from tests.test_model_trial_run import FakeSensors, _args, mt
+from tests.test_model_trial_run import _args, mt
 
 GOOD_LINES = [json.dumps({"message": {"content": json.dumps({"answer": "x", "paper": "p0"})}}), json.dumps({"done": True})]
 PS_OK = {"models": [{"name": "a", "size": 10, "size_vram": 10}]}
@@ -105,61 +105,8 @@ def ollama():
         srv.server.server_close()
 
 
-def hot_after(seconds):
-    hot = threading.Event()
-    threading.Timer(seconds, hot.set).start()
-    return hot
-
-
-@pytest.mark.parametrize("phase", [hang_before_headers, hang_after_headers], ids=["prima_delle_intestazioni", "stream_bloccato"])
-def test_arresto_termico_interrompe_la_richiesta_in_ogni_fase(ollama, monkeypatch, phase):
-    """thermal_before_headers e stream fermo: il thread chiamante chiude la connessione (annulla la generazione) e scarica il modello."""
-    monkeypatch.setattr(mt, "HOT_POLL_S", 0.01)
-    monkeypatch.setattr(mt, "REQUEST_TIMEOUT_S", 60)  # l'arresto non dipende dal timeout di risorsa
-    srv = ollama(post__api_chat=phase)
-    t0 = time.monotonic()
-    with pytest.raises(mt.ThermalStop):
-        mt.ollama_ask(srv.host, "m", "c", "q", hot_after(0.1))
-    assert time.monotonic() - t0 < 3
-    assert srv.dropped.wait(3), "il server non ha visto cadere la connessione: la generazione continuerebbe"
-    assert ("POST", "/api/generate", {"model": "m", "keep_alive": 0}) in srv.calls
-
-
-def test_arresto_durante_la_connessione_impedisce_l_invio_della_richiesta(ollama, monkeypatch):
-    """Il watcher scatta mentre connect() e' ancora in corso: a connessione ultimata nessuna inferenza deve partire."""
-    import http.client
-
-    monkeypatch.setattr(mt, "HOT_POLL_S", 0.01)
-    srv = ollama()
-    entered, release, original = threading.Event(), threading.Event(), http.client.HTTPConnection.connect
-
-    def slow_connect(self):
-        original(self)
-        entered.set()
-        release.wait(3)
-
-    monkeypatch.setattr(http.client.HTTPConnection, "connect", slow_connect)
-    hot = threading.Event()
-    threading.Timer(0.05, hot.set).start()
-    try:
-        with pytest.raises(mt.ThermalStop):
-            mt.ollama_ask(srv.host, "m", "c", "q", hot)
-    finally:
-        release.set()
-    time.sleep(0.3)  # il worker, sbloccato, non deve inviare /api/chat
-    assert ("POST", "/api/chat") not in srv.paths()
-
-
-def test_fallimento_dello_stop_del_modello_non_maschera_l_arresto(ollama, monkeypatch, capsys):
-    monkeypatch.setattr(mt, "HOT_POLL_S", 0.01)
-    srv = ollama(post__api_chat=hang_before_headers, post__api_generate=lambda h, s: send_json(h, {}, 500))
-    with pytest.raises(mt.ThermalStop):
-        mt.ollama_ask(srv.host, "m", "c", "q", hot_after(0.05))
-    assert "thermal_model_stop_failed" in capsys.readouterr().err
-
-
 def test_flusso_completo_viene_punteggiato_con_residenza(ollama):
-    reply, latency, ps = mt.ollama_ask(ollama().host, "a", "c", "q", threading.Event())
+    reply, latency, ps = mt.ollama_ask(ollama().host, "a", "c", "q")
     assert reply == {"answer": "x", "paper": "p0"} and latency >= 0 and ps == {"size": 10, "size_vram": 10}
 
 
@@ -180,7 +127,7 @@ def test_flusso_completo_viene_punteggiato_con_residenza(ollama):
         "ps_http_503", "ps_senza_models", "ps_non_oggetto", "ps_json_non_valido"])
 def test_ogni_errore_di_trasporto_stato_o_decodifica_e_un_errore_ollama(ollama, routes, match):
     with pytest.raises(mt.OllamaError, match=match or None):
-        mt.ollama_ask(ollama(**routes).host, "a", "c", "q", threading.Event())
+        mt.ollama_ask(ollama(**routes).host, "a", "c", "q")
 
 
 def test_connessione_rifiutata_e_un_errore_ollama(ollama):
@@ -188,7 +135,7 @@ def test_connessione_rifiutata_e_un_errore_ollama(ollama):
     srv.server.shutdown()
     srv.server.server_close()
     with pytest.raises(mt.OllamaError):
-        mt.ollama_ask(srv.host, "a", "c", "q", threading.Event())
+        mt.ollama_ask(srv.host, "a", "c", "q")
 
 
 @pytest.mark.parametrize("second", [
@@ -226,7 +173,38 @@ def write_scratch(tmp_path, monkeypatch, n):
     sha = hashlib.sha1((tmp_path / "questions.jsonl").read_bytes()).hexdigest()
     (tmp_path / "retrieval.json").write_text(json.dumps({"questions_sha1": sha}))
     (tmp_path / "contexts.jsonl").write_text("".join(json.dumps({"id": q["id"], "context": "c"}) + "\n" for q in qs))
-    monkeypatch.setattr(mt, "Sensors", FakeSensors)
     a = _args(tmp_path)
     a.models = ["a"]
     return a
+
+
+def test_ollama_che_non_manda_un_byte_per_il_limite_di_risorsa_e_un_errore_del_round(ollama, monkeypatch):
+    """Il supervisore ferma il caldo, non l'ollama appeso a sensori freddi: per quello c'e' il limite di stallo."""
+    monkeypatch.setattr(mt, "STALL_TIMEOUT_S", 0.3)
+    srv = ollama(post__api_chat=hang_before_headers)
+    t0 = time.monotonic()
+    with pytest.raises(mt.OllamaError, match="timed out"):
+        mt.ollama_ask(srv.host, "a", "c", "q")
+    assert time.monotonic() - t0 < 3
+
+
+def test_il_retrieve_ha_il_limite_di_stallo(tmp_path, monkeypatch):
+    import requests
+
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def post(*args, **kwargs):
+        seen.update(kwargs)
+        raise Stop
+
+    monkeypatch.setattr(requests, "post", post)
+    monkeypatch.setattr(mt, "SCRATCH_ROOT", tmp_path)
+    (tmp_path / "questions.jsonl").write_text(json.dumps({"id": "q1", "paper": "p", "answer": "x", "question": "?"}) + "\n")
+    a = _args(tmp_path)
+    a.rag_url, a.api_key_file, a.mode = "http://127.0.0.1:1", None, "hybrid"
+    with pytest.raises(Stop):
+        mt.cmd_retrieve(a)
+    assert seen["timeout"] == mt.STALL_TIMEOUT_S

@@ -10,33 +10,8 @@ import pytest
 mt = importlib.import_module("scripts.model_trial")
 
 
-def test_sensori_senza_soglie_dichiarate_non_partono(monkeypatch):
-    monkeypatch.setattr(mt, "gpu_slowdown_limit", lambda: None)
-    monkeypatch.setattr(mt, "cpu_limits", lambda: None)
-    with pytest.raises(SystemExit):
-        mt.Sensors()
-
-
 def test_guard_ok_segue_exit_code():
     assert mt.guard_ok(["true"]) and not mt.guard_ok(["false"])
-
-
-def test_limite_gpu_letto_da_nvidia_smi(monkeypatch):
-    class R:
-        stdout = "    GPU Slowdown Temp                 : 92 C\n"
-    monkeypatch.setattr(mt.subprocess, "run", lambda *a, **k: R())
-    assert mt.gpu_slowdown_limit() == 92.0
-
-
-def test_cpu_limite_da_coretemp_temp1_max(tmp_path, monkeypatch):
-    hw = tmp_path / "hwmon3"
-    hw.mkdir()
-    (hw / "name").write_text("coretemp\n")
-    (hw / "temp1_max").write_text("100000\n")
-    (hw / "temp1_input").write_text("45000\n")
-    monkeypatch.setattr(mt, "HWMON", tmp_path)
-    path, limit = mt.cpu_limits()
-    assert path == hw / "temp1_input" and limit == 100.0
 
 
 def _args(tmp_path, **kw):
@@ -45,91 +20,15 @@ def _args(tmp_path, **kw):
     return argparse.Namespace(scratch=str(tmp_path), models=["a", "b"], guard_cmd="true", ollama_host="http://127.0.0.1:11434", **kw)
 
 
-class FakeSensors:
-    def __init__(self):
-        self.hot = __import__("threading").Event()
-        self.peak_vram_mib = self.peak_gpu_c = self.peak_cpu_c = 0
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        pass
-
-
 def _setup_run(tmp_path, monkeypatch, ask):
     monkeypatch.setattr(mt, "SCRATCH_ROOT", tmp_path)
     qs = [{"id": f"q{i}", "paper": f"p{i}", "answer": "x", "question": "?"} for i in range(3)]
     (tmp_path / "questions.jsonl").write_text("".join(json.dumps(q) + "\n" for q in qs))
     (tmp_path / "retrieval.json").write_text(json.dumps({"questions_sha1": hashlib.sha1((tmp_path / "questions.jsonl").read_bytes()).hexdigest()}))
     (tmp_path / "contexts.jsonl").write_text("".join(json.dumps({"id": q["id"], "context": "c"}) + "\n" for q in qs))
-    monkeypatch.setattr(mt, "Sensors", FakeSensors)
     monkeypatch.setattr(mt, "ollama_ask", ask)
     mt.cmd_run(_args(tmp_path))
     return json.loads((tmp_path / "result.json").read_text())
-
-
-def test_round_interrotto_dalla_soglia_termica_non_entra_nei_punteggi(tmp_path, monkeypatch):
-    calls = []
-
-    def ask(host, model, ctx, question, hot):
-        calls.append(model)
-        if len(calls) > 2:
-            raise mt.ThermalStop(model)
-        return {}, 1.0, {"size": 10, "size_vram": 10}
-
-    res = _setup_run(tmp_path, monkeypatch, ask)
-    assert res["rounds_completed"] == 1 and res["stop_reason"].startswith("soglia termica")
-    assert all(n == 1 for _, n in map(tuple, res["scores"].values()))
-
-
-def test_ollama_ask_chiude_lo_stream_a_soglia_termica(monkeypatch):
-    import threading
-
-    class Resp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            pass
-
-        def raise_for_status(self):
-            pass
-
-        def iter_lines(self):
-            yield b'{"message": {"content": "{"}}'
-            yield b'{"message": {"content": "}"}}'
-
-    import requests
-
-    monkeypatch.setattr(requests, "post", lambda *a, **k: Resp())
-    hot = threading.Event()
-    hot.set()
-    with pytest.raises(mt.ThermalStop):
-        mt.ollama_ask("h", "m", "c", "q", hot)
-
-
-def test_sensore_illeggibile_alza_hot(monkeypatch):
-    sensors = object.__new__(mt.Sensors)
-    sensors.hot, sensors.stop = __import__("threading").Event(), __import__("threading").Event()
-
-    def boom():
-        raise ValueError("N/A")
-
-    sensors._sample = boom
-    sensors._loop()
-    assert sensors.hot.is_set()
-
-
-def test_lettura_sensore_in_timeout_ferma_la_prova(monkeypatch):
-    def hang(*a, **k):
-        raise mt.subprocess.TimeoutExpired("nvidia-smi", 10)
-
-    monkeypatch.setattr(mt.subprocess, "run", hang)
-    sensors = object.__new__(mt.Sensors)
-    sensors.hot, sensors.stop = __import__("threading").Event(), __import__("threading").Event()
-    sensors._loop()
-    assert sensors.hot.is_set()
 
 
 def test_run_rifiuta_contesti_mancanti(tmp_path, monkeypatch):
@@ -192,7 +91,7 @@ def test_candidato_non_ammesso_non_vince_ma_ha_la_sua_p_nel_report():
 
 
 def test_run_usa_tutte_le_domande_e_ignora_i_non_ammessi(tmp_path, monkeypatch):
-    def ask(host, model, ctx, question, hot):
+    def ask(host, model, ctx, question):
         right = {"answer": "x", "paper": ["p0", "p1", "p2"]}
         # "b" e' perfetto ma sfora la VRAM: non deve vincere.
         return right, 1.0, {"size": 10, "size_vram": 10 if model == "a" else 5}
@@ -203,34 +102,12 @@ def test_run_usa_tutte_le_domande_e_ignora_i_non_ammessi(tmp_path, monkeypatch):
     assert res["method"]["prior"] == "Beta(1, 1)" and "p_best" in res["decision"]
 
 
-def test_ollama_ask_non_parte_se_la_soglia_e_gia_scattata(monkeypatch):
-    import threading
-
-    called = []
-    import requests
-
-    monkeypatch.setattr(requests, "post", lambda *a, **k: called.append(1))
-    hot = threading.Event()
-    hot.set()
-    with pytest.raises(mt.ThermalStop):
-        mt.ollama_ask("h", "m", "c", "q", hot)
-    assert not called
-
-
 def test_errore_ollama_scarta_il_round_e_lo_registra(tmp_path, monkeypatch):
-    def ask(host, model, ctx, question, hot):
+    def ask(host, model, ctx, question):
         raise mt.OllamaError("boom")
 
     res = _setup_run(tmp_path, monkeypatch, ask)
     assert res["rounds_completed"] == 0 and res["stop_reason"].startswith("errore ollama")
-
-
-def test_run_rifiuta_ollama_su_un_altro_host(tmp_path, monkeypatch):
-    monkeypatch.setattr(mt, "SCRATCH_ROOT", tmp_path)
-    args = _args(tmp_path)
-    args.ollama_host = "http://10.0.0.5:11434"
-    with pytest.raises(SystemExit, match="questo host"):
-        mt.cmd_run(args)
 
 
 def test_run_rifiuta_candidati_duplicati(tmp_path, monkeypatch):
@@ -244,7 +121,7 @@ def test_run_rifiuta_candidati_duplicati(tmp_path, monkeypatch):
 def test_esito_vecchio_rimosso_all_avvio(tmp_path, monkeypatch):
     (tmp_path / "result.json").write_text('{"decision": {"winner": "vecchio"}}')
 
-    def ask(host, model, ctx, question, hot):
+    def ask(host, model, ctx, question):
         raise RuntimeError("fallisce prima di scrivere l'esito")
 
     with pytest.raises(RuntimeError):
@@ -254,7 +131,7 @@ def test_esito_vecchio_rimosso_all_avvio(tmp_path, monkeypatch):
 
 
 def test_run_rifiuta_contesti_di_altre_domande(tmp_path, monkeypatch):
-    def ask(host, model, ctx, question, hot):
+    def ask(host, model, ctx, question):
         raise AssertionError("non deve partire")
 
     monkeypatch.setattr(mt, "SCRATCH_ROOT", tmp_path)

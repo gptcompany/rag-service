@@ -497,13 +497,14 @@ def finalize_result(scratch: Path, out, stop_reason: str | None, limits: dict) -
         coverage = {k: v for k, v in result.get("decision", {}).items() if k in ("questions_evaluated", "questions_total")}
         result["decision"] = {"winner": None, "reason": f"PARZIALE: {stop_reason}", **coverage}
     # La telemetria e' la conferma del supervisore: un esito senza non e' stato confermato (supervisore morto prima) e non vale.
-    result["telemetry"] = {"peaks": out.peaks, "limits": limits, "tripped": out.tripped, "exit_code": out.code, "group_closed_by": out.how}
+    result["telemetry"] = {"peaks": out.peaks, "limits": limits, "tripped": out.tripped, "exit_code": out.code, "group_closed_by": out.how,
+                           "shutdown": out.shutdown}
     write_json_atomic(path, result)
 
 
 def run_supervised(a, raw: list[str]) -> int:
     """Il supervisore: legge i sensori, poi rilancia questo stesso script come figlio in un gruppo di processi proprio.
-    Da qui NON parte nessuna chiamata a ollama, salvo lo scarico dei modelli all'arresto."""
+    Da qui NON parte nessuna chiamata a ollama, salvo l'arresto termico: stop del rag-service, scarico dei modelli, verifica."""
     # Sensori e nvidia-smi sono locali: la prova ha senso (e il gate termico vale) solo se ollama gira qui.
     for url in (a.ollama_host, getattr(a, "rag_url", a.ollama_host)):
         if urlparse(url).hostname not in LOOPBACK:
@@ -517,10 +518,16 @@ def run_supervised(a, raw: list[str]) -> int:
     except trial_supervisor.SensorError as exc:
         log("preflight_failed", error=str(exc))
         return trial_supervisor.EXIT_PREFLIGHT
+    # TODO: --rag-url, --compose-file e --ollama-host devono indicare lo stesso deployment; oggi non c'e' un controllo che lo verifichi
+    # (README, "Prova modelli"): un compose o un ollama diverso da quelli usati dalla query fermerebbe e verificherebbe il bersaglio sbagliato.
+    if a.cmd == "retrieve" and trial_supervisor.rag_service_running(Path(a.compose_file), a.rag_service) is not True:
+        # Un compose di un altro progetto (altra cartella, altro nome) fermerebbe "con successo" un servizio che non e' quello in uso.
+        log("preflight_failed", error=f"rag-service '{a.rag_service}' non in esecuzione nel compose {a.compose_file}: l'arresto non lo fermerebbe")
+        return trial_supervisor.EXIT_PREFLIGHT
     note = None
     try:
         out = trial_supervisor.supervise(
-            child_command(raw), sensors, lambda: trial_supervisor.unload_models(a.ollama_host), {**os.environ, ENV_SUPERVISOR: str(os.getpid())})
+            child_command(raw), sensors, lambda: trial_supervisor.thermal_shutdown(a.ollama_host, Path(a.compose_file), a.rag_service), {**os.environ, ENV_SUPERVISOR: str(os.getpid())})
         if out.tripped:
             note = f"arresto termico: {out.tripped}"
     except KeyboardInterrupt:  # SIGINT o SIGTERM: il gruppo e' gia' stato terminato da supervise()
@@ -533,6 +540,22 @@ def run_supervised(a, raw: list[str]) -> int:
 
 def child_command(raw: list[str]) -> list[str]:
     return [sys.executable, str(Path(__file__).resolve()), *raw]
+
+
+def _add_compose_args(s) -> None:
+    s.add_argument("--compose-file", default=str(trial_supervisor.COMPOSE_FILE), help="compose del rag-service, fermato all'arresto termico")
+    s.add_argument("--rag-service", default=trial_supervisor.RAG_SERVICE)
+
+
+def cmd_rag_restart(a) -> None:
+    """L'unico riavvio del rag-service dopo un arresto termico: esplicito, registrato, condizionato ai sensori."""
+    try:
+        sensors = trial_supervisor.Sensors()
+    except trial_supervisor.SensorError as exc:
+        log("rag_restart_refused", error=str(exc))
+        raise SystemExit(trial_supervisor.EXIT_PREFLIGHT) from exc
+    if not trial_supervisor.restart_rag_service(sensors, Path(a.compose_file), a.rag_service):
+        raise SystemExit(trial_supervisor.EXIT_PREFLIGHT)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -548,12 +571,17 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--api-key-file", default=os.environ.get("RAG_API_KEY_FILE"))
     s.add_argument("--mode", default="hybrid")
     s.add_argument("--ollama-host", default="http://127.0.0.1:11434", help="dove scaricare i modelli all'arresto termico")
+    _add_compose_args(s)
     s.set_defaults(fn=cmd_retrieve)
     s = sub.add_parser("run")
     s.add_argument("--models", nargs="+", required=True)
     s.add_argument("--ollama-host", default="http://127.0.0.1:11434")
     s.add_argument("--guard-cmd", required=True, help="comando dell_guard: exit 0 = via libera")
+    _add_compose_args(s)
     s.set_defaults(fn=cmd_run)
+    s = sub.add_parser("rag-restart", help="rialza il rag-service fermato dall'arresto termico, solo con i sensori sotto soglia")
+    _add_compose_args(s)
+    s.set_defaults(fn=cmd_rag_restart)
     a = p.parse_args(raw)
     if a.cmd not in SUPERVISED:
         return a.fn(a)

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["requests"]
+# dependencies = ["requests", "numpy"]
 # ///
 """Prova dei modelli di generazione su ollama (F-775, fase 2: NON eseguire senza il SI' dell'operatore).
 
-Sottocomandi di questa parte (generazione e punteggio delle domande):
+Sottocomandi, nell'ordine:
   questions  genera le domande dal testo dei chunk gia' indicizzati (cloze, nessuna domanda a mano)
   retrieve   recupera UNA volta il contesto per ogni domanda (POST /query context_only) e lo salva
+  run        stesso contesto a ogni candidato su TUTTE le domande; per ogni candidato ammesso (interamente
+             in GPU) posterior Beta(1+corrette, 1+errate), P(migliore) per Monte Carlo, vince l'argmax
 
 Lo scratch deve stare sotto /media/sam/1TB/scratch/f775/ (mai /tmp). La chiave API si legge da un
 file 0600 (RAG_API_KEY_FILE) e non viene mai stampata.
@@ -20,13 +22,33 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
+import threading
 import time
 import unicodedata
 from collections import defaultdict
 from pathlib import Path
+from urllib.parse import urlparse
+
+import numpy as np
 
 SCRATCH_ROOT = Path("/media/sam/1TB/scratch/f775")
+
+# LIMITE di sicurezza, non un parametro: una lettura del sensore che non risponde entro 10 s equivale a
+# telemetria persa e ferma la prova (fail-closed), invece di lasciarla girare senza controllo termico.
+SENSOR_READ_TIMEOUT_S = 10
+HWMON = Path("/sys/class/hwmon")
+# LIMITE di reattivita': la connessione si chiude entro 1 s da `hot`; un risveglio al secondo costa nulla.
+HOT_POLL_S = 1.0
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+# LIMITE di risorsa, non un parametro statistico: 200k campioni per candidato occupano pochi MB (3 x 1.6 MB
+# in float64) e portano l'errore Monte Carlo su P(migliore) a ~sqrt(0.25/N) = 0.1%, ben sotto ogni differenza
+# che cambi la scelta. Il seme fissa solo la riproducibilita' del report.
+MC_SAMPLES = 200_000
+MC_SEED = 775
+# ASSUNZIONE dichiarata: prior uniforme Beta(1, 1) sulla proporzione di risposte corrette di ogni candidato.
+PRIOR_CORRECT = PRIOR_WRONG = 1
 
 
 # Segni meno tipografici (trattini Unicode U+2010..2013, meno matematico U+2212, varianti small/fullwidth) -> "-".
@@ -130,6 +152,172 @@ def is_correct(question: dict, reply: dict) -> bool:
     cited = {paper_key(t).strip().casefold() for t in map(str, items) if t.strip()}
     return bool(expected) and normalize(reply.get("answer", "")) == expected and paper_key(question["paper"]).strip().casefold() in cited
 
+def p_best(scores: dict[str, tuple[int, int]]) -> dict[str, float]:
+    """P(il candidato ha la proporzione di corrette piu' alta) campionando i posterior Beta(1+k, 1+n-k)."""
+    names = sorted(scores)
+    rng = np.random.default_rng(MC_SEED)
+    draws = np.stack([rng.beta(PRIOR_CORRECT + scores[m][0], PRIOR_WRONG + scores[m][1] - scores[m][0], MC_SAMPLES)
+                      for m in names])
+    wins = np.bincount(draws.argmax(axis=0), minlength=len(names))
+    return {m: float(w) / MC_SAMPLES for m, w in zip(names, wins)}
+
+
+def pick_winner(scores: dict[str, tuple[int, int]], vram: dict[str, int], admitted: set[str]) -> dict:
+    """Argmax di P(migliore) fra gli ammessi; solo a posterior identici (stessi k e n) vince il minore size_vram."""
+    everyone = p_best(scores) if scores else {}
+    pool = {m: s for m, s in scores.items() if m in admitted}
+    if not pool:
+        return {"winner": None, "reason": "nessun candidato ammesso (size_vram != size)", "p_best_all": everyone}
+    p = p_best(pool)
+    best = max(sorted(p), key=p.get)
+    tied = sorted(m for m in pool if pool[m] == pool[best])
+    if len(tied) > 1:
+        return {"winner": min(tied, key=lambda m: (vram[m], m)), "reason": "parita' esatta: minore size_vram",
+                "tied": tied, "p_best": p, "p_best_all": everyone}
+    return {"winner": best, "reason": "argmax P(migliore)", "p_best": p, "p_best_all": everyone}
+
+
+# ---- sensori e arresto ---------------------------------------------------
+
+def gpu_slowdown_limit() -> float | None:
+    out = subprocess.run(["nvidia-smi", "-q", "-d", "TEMPERATURE"], capture_output=True, text=True, check=False).stdout
+    m = re.search(r"GPU Slowdown Temp\s*:\s*(\d+)", out)
+    return float(m.group(1)) if m else None
+
+
+def cpu_limits() -> tuple[Path, float] | None:
+    for hw in sorted(HWMON.glob("hwmon*")):
+        if (hw / "name").read_text().strip() == "coretemp" and (hw / "temp1_max").exists():
+            return hw / "temp1_input", int((hw / "temp1_max").read_text()) / 1000
+    return None
+
+
+class Sensors:
+    """Campiona VRAM e temperature senza pause scelte a mano e alza `hot` al limite dichiarato dai sensori."""
+
+    def __init__(self) -> None:
+        self.gpu_limit = gpu_slowdown_limit()
+        cpu = cpu_limits()
+        # Fail-closed: senza soglia dichiarata non si parte, la si inventerebbe a mano.
+        if self.gpu_limit is None or cpu is None:
+            raise SystemExit("soglie di slowdown non leggibili dai sensori: prova non avviata")
+        self.cpu_input, self.cpu_limit = cpu
+        self.hot = threading.Event()
+        self.stop = threading.Event()
+        self.peak_vram_mib = 0
+        self.peak_gpu_c = 0.0
+        self.peak_cpu_c = 0.0
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+
+    def _sample(self) -> None:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used,temperature.gpu", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, check=False, timeout=SENSOR_READ_TIMEOUT_S).stdout.strip()
+        mem, gpu = (float(x) for x in out.split(","))
+        cpu = int(self.cpu_input.read_text()) / 1000
+        self.peak_vram_mib = max(self.peak_vram_mib, int(mem))
+        self.peak_gpu_c, self.peak_cpu_c = max(self.peak_gpu_c, gpu), max(self.peak_cpu_c, cpu)
+        if gpu >= self.gpu_limit or cpu >= self.cpu_limit:
+            log("thermal_stop", gpu=gpu, gpu_limit=self.gpu_limit, cpu=cpu, cpu_limit=self.cpu_limit)
+            self.hot.set()
+
+    def _loop(self) -> None:
+        while not self.stop.is_set():
+            try:
+                self._sample()
+            except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+                # Fail-closed: un sensore illeggibile equivale a soglia superata.
+                log("sensor_unreadable", error=str(exc))
+                self.hot.set()
+                return
+
+    def __enter__(self):
+        self._sample()  # un primo campione valido prima di qualsiasi inferenza
+        if self.hot.is_set():
+            raise SystemExit("soglia termica gia' raggiunta: prova non avviata")
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stop.set()
+        self.thread.join()
+
+
+def guard_ok(cmd: list[str]) -> bool:
+    return subprocess.run(cmd, capture_output=True, check=False).returncode == 0
+
+
+# ---- ollama / rag --------------------------------------------------------
+
+PROMPT = (
+    "Answer ONLY from the context. Reply as JSON {\"answer\": \"<the missing value, dataset or method>\", "
+    "\"paper\": \"<file name of the source paper as shown in the context>\"}.\n\nContext:\n%s\n\nQuestion: %s"
+)
+
+
+class ThermalStop(Exception):
+    pass
+
+
+class OllamaError(Exception):
+    """Generazione fallita o incompleta: non e' una risposta sbagliata e non va contata come tale."""
+
+
+def _watch_hot(resp, hot: threading.Event, done: threading.Event) -> None:
+    """Chiude la connessione appena scatta `hot`, anche se Ollama non emette righe (caricamento, prompt lungo)."""
+    while not done.is_set():
+        if hot.wait(HOT_POLL_S):
+            resp.close()
+            return
+
+
+def ollama_ask(host: str, model: str, context: str, question: str, hot: threading.Event) -> tuple[dict, float, dict]:
+    """Chiamata in streaming: a soglia termica si chiude la connessione, e Ollama interrompe la generazione."""
+    import requests
+
+    if hot.is_set():
+        raise ThermalStop(model)
+    t0 = time.monotonic()
+    text = ""
+    finished = False
+    done = threading.Event()
+    with requests.post(f"{host}/api/chat", stream=True, timeout=600, allow_redirects=False, json={
+        "model": model, "stream": True, "think": False, "format": "json",
+        "messages": [{"role": "user", "content": PROMPT % (context, question)}],
+    }) as r:
+        threading.Thread(target=_watch_hot, args=(r, hot, done), daemon=True).start()
+        try:
+            r.raise_for_status()
+            for line in r.iter_lines():
+                if hot.is_set():
+                    raise ThermalStop(model)
+                if line:
+                    obj = json.loads(line)
+                    if "error" in obj:
+                        raise OllamaError(str(obj["error"]))
+                    text += obj.get("message", {}).get("content", "")
+                    finished = finished or bool(obj.get("done"))
+        except (requests.RequestException, OSError, ValueError) as exc:
+            if hot.is_set():
+                raise ThermalStop(model) from exc
+            raise OllamaError(str(exc)) from exc
+        finally:
+            done.set()
+    if hot.is_set():
+        raise ThermalStop(model)
+    if not finished:
+        raise OllamaError("stream chiuso senza done")
+    latency = time.monotonic() - t0
+    try:
+        reply = json.loads(text)
+    except ValueError:
+        reply = {}
+    # /api/ps riporta il nome canonico ("qwen3" -> "qwen3:latest").
+    names = {model, model + ":latest"}
+    ps = next((m for m in requests.get(f"{host}/api/ps", timeout=30, allow_redirects=False).json().get("models", [])
+               if m.get("name") in names or m.get("model") in names), {})
+    return reply if isinstance(reply, dict) else {}, latency, {"size": ps.get("size"), "size_vram": ps.get("size_vram")}
+
 
 def cmd_questions(a) -> None:
     scratch = check_scratch(Path(a.scratch))
@@ -178,6 +366,84 @@ def cmd_retrieve(a) -> None:
         raise SystemExit(f"{missing} domande senza contesto: rilanciare retrieve prima di `run`")
 
 
+def cmd_run(a) -> None:
+    # Sensori e nvidia-smi sono locali: la prova ha senso (e il gate termico vale) solo se ollama gira qui.
+    if urlparse(a.ollama_host).hostname not in LOOPBACK:
+        raise SystemExit(f"ollama deve girare su questo host (telemetria locale): {a.ollama_host}")
+    if len(set(a.models)) != len(a.models):
+        raise SystemExit(f"candidati duplicati: {a.models}")
+    scratch = check_scratch(Path(a.scratch))
+    (scratch / "result.json").unlink(missing_ok=True)  # un esito vecchio non deve passare per quello di questa prova
+    qs = [json.loads(line) for line in (scratch / "questions.jsonl").read_text().splitlines()]
+    meta = scratch / "retrieval.json"
+    fingerprint = hashlib.sha1((scratch / "questions.jsonl").read_bytes()).hexdigest()
+    if not meta.exists() or json.loads(meta.read_text()).get("questions_sha1") != fingerprint:
+        raise SystemExit("i contesti non sono stati recuperati per queste domande: rilanciare retrieve")
+    ctx = {(d := json.loads(line))["id"]: d["context"] for line in (scratch / "contexts.jsonl").read_text().splitlines()}
+    missing = [q["id"] for q in qs if not ctx.get(q["id"], "").strip()]
+    if missing:
+        raise SystemExit(f"{len(missing)} domande senza contesto (rilanciare retrieve): {missing[:10]}")
+    by_paper = defaultdict(list)
+    for q in qs:
+        if q["id"] in ctx:
+            by_paper[q["paper"]].append(q)
+    rounds = sorted(by_paper, key=lambda p: hashlib.sha1(p.encode()).hexdigest())
+    scores = {m: (0, 0) for m in a.models}
+    # Ammesso = OGNI risposta contata e' girata interamente in GPU (size_vram == size > 0), non solo i massimi.
+    resident = dict.fromkeys(a.models, True)
+    vram = dict.fromkeys(a.models, 0)
+    latency: dict[str, list[float]] = {m: [] for m in a.models}
+    guard = a.guard_cmd.split()
+    stop_reason = "domande finite"
+    rounds_done = 0
+    with Sensors() as sensors:
+        for paper in rounds:
+            if not guard_ok(guard):
+                stop_reason = "dell_guard rifiuta"
+                break
+            tally = {m: [0, 0, True, 0, []] for m in a.models}  # k, n, resident, vram, latencies
+            try:
+                for model in a.models:
+                    for q in by_paper[paper]:
+                        reply, secs, ps = ollama_ask(a.ollama_host, model, ctx[q["id"]], q["question"], sensors.hot)
+                        ok = is_correct(q, reply)
+                        t = tally[model]
+                        t[0] += ok
+                        t[1] += 1
+                        t[2] = t[2] and bool(ps["size"]) and ps["size_vram"] == ps["size"]
+                        t[3] = max(t[3], ps["size_vram"] or 0)
+                        t[4].append(secs)
+                        log("answer", model=model, qid=q["id"], correct=ok, latency=round(secs, 2), **ps)
+            except ThermalStop:
+                stop_reason = "soglia termica (round incompleto scartato)"
+                break
+            except OllamaError as exc:
+                log("ollama_error", error=str(exc))
+                stop_reason = f"errore ollama (round incompleto scartato): {exc}"
+                break
+            if sensors.hot.is_set():
+                stop_reason = "soglia termica"
+                break
+            # Si fondono solo i round completi per tutti i candidati: nessun confronto su n diseguali.
+            rounds_done += 1
+            for m, (k, n, res, v, lat) in tally.items():
+                scores[m] = (scores[m][0] + k, scores[m][1] + n)
+                resident[m] = resident[m] and res
+                vram[m] = max(vram[m], v)
+                latency[m] += lat
+    admitted = {m for m in a.models if rounds_done and resident[m] and vram[m]}
+    result = {
+        "stop_reason": stop_reason, "rounds_completed": rounds_done, "scores": scores,
+        "method": {"prior": f"Beta({PRIOR_CORRECT}, {PRIOR_WRONG})", "mc_samples": MC_SAMPLES, "mc_seed": MC_SEED},
+        "admitted": sorted(admitted), "vram": vram,
+        "latency_mean_s": {m: sum(v) / len(v) for m, v in latency.items() if v},
+        "peak_vram_mib": sensors.peak_vram_mib, "peak_gpu_c": sensors.peak_gpu_c, "peak_cpu_c": sensors.peak_cpu_c,
+        "decision": pick_winner(scores, vram, admitted),
+    }
+    (scratch / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True))
+    log("result", **result["decision"], stop_reason=stop_reason)
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--scratch", default=str(SCRATCH_ROOT))
@@ -190,6 +456,11 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--api-key-file", default=os.environ.get("RAG_API_KEY_FILE"))
     s.add_argument("--mode", default="hybrid")
     s.set_defaults(fn=cmd_retrieve)
+    s = sub.add_parser("run")
+    s.add_argument("--models", nargs="+", required=True)
+    s.add_argument("--ollama-host", default="http://127.0.0.1:11434")
+    s.add_argument("--guard-cmd", required=True, help="comando dell_guard: exit 0 = via libera")
+    s.set_defaults(fn=cmd_run)
     a = p.parse_args(argv)
     a.fn(a)
 

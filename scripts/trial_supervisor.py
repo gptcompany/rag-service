@@ -26,14 +26,19 @@ def _positive(value: float, what: str) -> float:
     return value
 
 
-def gpu_slowdown_limit() -> float:
+def _nvidia_smi(*args: str) -> str:
+    """Stdout di nvidia-smi, o SensorError se non parte, scade o esce con errore (un exit != 0 invalida anche l'output parsabile)."""
     try:
-        out = subprocess.run(
-            ["nvidia-smi", "-q", "-d", "TEMPERATURE"], capture_output=True, text=True, check=False, timeout=SENSOR_READ_TIMEOUT_S
-        ).stdout
+        done = subprocess.run(["nvidia-smi", *args], capture_output=True, text=True, check=False, timeout=SENSOR_READ_TIMEOUT_S)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise SensorError(f"nvidia-smi -q: {exc}") from exc
-    m = re.search(r"GPU Slowdown Temp\s*:\s*(\d+)", out)
+        raise SensorError(f"nvidia-smi {args[0]}: {exc}") from exc
+    if done.returncode != 0:
+        raise SensorError(f"nvidia-smi {args[0]}: exit {done.returncode}")
+    return done.stdout
+
+
+def gpu_slowdown_limit() -> float:
+    m = re.search(r"^\s*GPU Slowdown Temp\s*:\s*(\d+) C\s*$", _nvidia_smi("-q", "-d", "TEMPERATURE"), re.MULTILINE)
     if not m:
         raise SensorError("soglia GPU Slowdown Temp non dichiarata da nvidia-smi")
     return _positive(float(m.group(1)), "GPU Slowdown Temp")
@@ -60,16 +65,10 @@ class Sensors:
 
     def read(self) -> dict:
         try:
-            out = subprocess.run(
-                ["nvidia-smi", "--query-gpu=memory.used,temperature.gpu", "--format=csv,noheader,nounits"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=SENSOR_READ_TIMEOUT_S,
-            ).stdout.strip()
+            out = _nvidia_smi("--query-gpu=memory.used,temperature.gpu", "--format=csv,noheader,nounits").strip()
             mem, gpu = (float(x) for x in out.split(","))
             cpu = int(self.cpu_input.read_text()) / 1000
-        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        except (OSError, ValueError) as exc:
             raise SensorError(str(exc)) from exc
         if not all(math.isfinite(v) and v >= 0 for v in (mem, gpu, cpu)):
             raise SensorError(f"lettura fuori dominio: vram={mem} gpu={gpu} cpu={cpu}")

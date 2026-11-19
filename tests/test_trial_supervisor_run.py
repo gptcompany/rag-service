@@ -15,7 +15,8 @@ from scripts import trial_supervisor as ts
 SPAWNER = (
     "import os, subprocess, sys, time\n"
     "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
-    "open(sys.argv[1], 'w').write(f'{os.getpid()} {g.pid}')\n"
+    "open(sys.argv[1] + '.tmp', 'w').write(f'{os.getpid()} {g.pid}')\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
     "time.sleep(60)\n"
 )
 IGNORES_TERM = "import signal, sys, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\nopen(sys.argv[1], 'w').write('up')\ntime.sleep(60)\n"
@@ -158,7 +159,7 @@ def test_scarico_di_ogni_modello_residente_e_un_errore_non_ferma_gli_altri(capsy
     finally:
         srv.shutdown()
         srv.server_close()
-    assert calls == [{"model": "a", "keep_alive": 0}, {"model": "b", "keep_alive": 0}]
+    assert sorted(c["model"] for c in calls) == ["a", "b"] and all(c["keep_alive"] == 0 for c in calls)  # un thread per modello: ordine libero
     err = capsys.readouterr().err
     assert err.count("thermal_model_stop_failed") == 1 and err.count('"event": "thermal_model_stop"') == 1
 

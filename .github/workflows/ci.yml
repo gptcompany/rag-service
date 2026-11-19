@@ -50,7 +50,7 @@ jobs:
 
       - name: Extended lightweight suite
         run: |
-          pytest tests/test_raganything_service_api.py tests/test_raganything_service_security.py tests/test_setup_wizard.py tests/test_embedding_device.py tests/test_compose_limits.py tests/test_model_trial.py tests/test_model_trial_run.py tests/test_model_trial_transport.py tests/test_model_trial_rounds.py tests/test_trial_supervisor.py tests/test_trial_supervisor_run.py --cov=scripts --cov-report=term --cov-report=json
+          pytest tests/test_raganything_service_api.py tests/test_raganything_service_security.py tests/test_setup_wizard.py tests/test_embedding_device.py tests/test_compose_limits.py tests/test_model_trial.py tests/test_model_trial_run.py tests/test_model_trial_transport.py tests/test_model_trial_rounds.py tests/test_trial_supervisor.py tests/test_trial_supervisor_run.py tests/test_trial_supervisor_limits.py --cov=scripts --cov-report=term --cov-report=json
 
       - name: Extract coverage percentage
         id: cov

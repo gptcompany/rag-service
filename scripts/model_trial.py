@@ -466,6 +466,12 @@ def deferred_termination():
             raise SystemExit(128 + signum)
 
 
+def install_child_handlers() -> None:
+    """Il segnale del supervisore e l'interruzione diretta: uscita pulita con esito parziale, differita nelle sezioni critiche."""
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, _terminated)
+
+
 def die_with_parent() -> None:
     """Il figlio non sopravvive al supervisore (OOM killer o uccisione brutale: nessuna pulizia, e il figlio sta in un'altra
     sessione): PR_SET_PDEATHSIG gli manda SIGTERM alla morte del padre. Solo Linux, come l'host della prova. Poi si
@@ -551,9 +557,9 @@ def main(argv: list[str] | None = None) -> None:
     a = p.parse_args(raw)
     if a.cmd not in SUPERVISED:
         return a.fn(a)
-    if os.environ.get(ENV_SUPERVISOR) == str(os.getppid()):  # siamo il figlio del supervisore
+    if ENV_SUPERVISOR in os.environ:  # lanciati dal supervisore: se il padre non e' piu' lui e' morto durante l'avvio, si esce
         die_with_parent()
-        signal.signal(signal.SIGTERM, _terminated)
+        install_child_handlers()
         return a.fn(a)
     raise SystemExit(run_supervised(a, raw))
 

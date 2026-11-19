@@ -1,0 +1,86 @@
+"""Sensori termici per la prova dei modelli (F-775, decisione A dell'operatore, 20/11).
+
+Soglie dai sensori (coretemp temp1_max, `nvidia-smi -q` slowdown), mai a mano; sensore illeggibile, assente o fuori
+dominio = SensorError (fail-closed). Stesso schema di dell_guard (temp1_max del coretemp, ignoto = blocco): il modulo
+di dell_guard sta in un altro repository e non e' importabile da qui, per cui la lettura del coretemp ne ripete il criterio.
+"""
+from __future__ import annotations
+
+import math
+import re
+import subprocess
+from pathlib import Path
+
+HWMON = Path("/sys/class/hwmon")
+# LIMITE di risorsa: nvidia-smi che non risponde entro 10 s e' telemetria persa (fail-closed), non un'attesa da ripetere.
+SENSOR_READ_TIMEOUT_S = 10
+
+
+class SensorError(Exception):
+    """Sensore assente, illeggibile o fuori dominio."""
+
+
+def _positive(value: float, what: str) -> float:
+    if not math.isfinite(value) or value <= 0:
+        raise SensorError(f"{what} fuori dominio: {value}")
+    return value
+
+
+def _nvidia_smi(*args: str) -> str:
+    """Stdout di nvidia-smi, o SensorError se non parte, scade o esce con errore (un exit != 0 invalida anche l'output parsabile)."""
+    try:
+        done = subprocess.run(["nvidia-smi", *args], capture_output=True, text=True, check=False, timeout=SENSOR_READ_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired, ValueError) as exc:  # ValueError: output non decodificabile
+        raise SensorError(f"nvidia-smi {args[0]}: {exc}") from exc
+    if done.returncode != 0:
+        raise SensorError(f"nvidia-smi {args[0]}: exit {done.returncode}")
+    return done.stdout
+
+
+def gpu_slowdown_limit() -> float:
+    m = re.search(r"^\s*GPU Slowdown Temp\s*:\s*(\d+) C\s*$", _nvidia_smi("-q", "-d", "TEMPERATURE"), re.MULTILINE)
+    if not m:
+        raise SensorError("soglia GPU Slowdown Temp non dichiarata da nvidia-smi")
+    return _positive(float(m.group(1)), "GPU Slowdown Temp")
+
+
+def cpu_limit() -> tuple[Path, float]:
+    """(file temp1_input, soglia in gradi): temp1_max del coretemp, come dell_guard. Un solo pacchetto: con piu' coretemp
+    se ne leggerebbe uno e gli altri potrebbero superare la propria soglia senza che nessuno se ne accorga (fail-closed)."""
+    try:
+        found = [hw for hw in sorted(HWMON.glob("hwmon*")) if (hw / "name").read_text().strip() == "coretemp"]
+        if len(found) > 1:
+            raise SensorError(f"{len(found)} pacchetti coretemp: se ne legge uno solo, prova non avviata")
+        if found:
+            return found[0] / "temp1_input", _positive(int((found[0] / "temp1_max").read_text()) / 1000, "coretemp temp1_max")
+    except (OSError, ValueError, OverflowError) as exc:
+        raise SensorError(f"coretemp temp1_max: {exc}") from exc
+    raise SensorError("coretemp assente")
+
+
+class Sensors:
+    """Soglie lette una volta dai sensori; `read()` da' le temperature correnti o alza SensorError."""
+
+    def __init__(self) -> None:
+        self.cpu_input, cpu = cpu_limit()
+        self.limits = {"gpu": gpu_slowdown_limit(), "cpu": cpu}
+        self.peaks = {"vram_mib": 0, "gpu_c": 0.0, "cpu_c": 0.0}
+
+    def read(self) -> dict:
+        try:
+            out = _nvidia_smi("--query-gpu=memory.used,temperature.gpu", "--format=csv,noheader,nounits").strip()
+            fields = re.fullmatch(r"(\d+), (\d+)", out)  # nounits: due interi decimali; underscore, segni o esponenti sono output corrotto
+            if not fields:
+                raise ValueError(f"output di nvidia-smi inatteso: {out[:80]!r}")
+            mem, gpu = int(fields[1]), int(fields[2])
+            cpu = int(self.cpu_input.read_text()) / 1000
+            if not all(math.isfinite(v) and v >= 0 for v in (mem, gpu, cpu)):
+                raise ValueError(f"lettura fuori dominio: vram={mem} gpu={gpu} cpu={cpu}")
+        except (OSError, ValueError, OverflowError) as exc:
+            raise SensorError(str(exc)) from exc
+        self.peaks = {
+            "vram_mib": max(self.peaks["vram_mib"], int(mem)),
+            "gpu_c": max(self.peaks["gpu_c"], gpu),
+            "cpu_c": max(self.peaks["cpu_c"], cpu),
+        }
+        return {"gpu": gpu, "cpu": cpu, "vram_mib": int(mem)}

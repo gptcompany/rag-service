@@ -487,6 +487,26 @@ def cmd_run(a) -> None:
     stop_reason = "prova non completata"
     rounds_done = 0
     sensors = Sensors()
+
+    def snapshot(complete: bool) -> dict:
+        """Esito su disco (sostituzione atomica) dopo ogni round e in uscita: un processo ucciso lascia l'ultimo round intero.
+        Il vincitore esiste solo se tutte le domande sono state valutate per tutti i candidati ammessi."""
+        admitted = {m for m in a.models if rounds_done and resident[m] and vram[m]}
+        decision = pick_winner(scores, vram, admitted) if complete else {
+            "winner": None, "reason": f"PARZIALE: {stop_reason}", "questions_evaluated": rounds_done, "questions_total": len(rounds)}
+        result = {
+            "status": "COMPLETO" if complete else "PARZIALE", "stop_reason": stop_reason, "rounds_completed": rounds_done,
+            "scores": scores, "method": {"prior": f"Beta({PRIOR_CORRECT}, {PRIOR_WRONG})", "mc_samples": MC_SAMPLES, "mc_seed": MC_SEED},
+            "admitted": sorted(admitted), "vram": vram, "latency_mean_s": {m: sum(v) / len(v) for m, v in latency.items() if v},
+            "peak_vram_mib": sensors.peak_vram_mib, "peak_gpu_c": sensors.peak_gpu_c, "peak_cpu_c": sensors.peak_cpu_c,
+            "decision": decision,
+        }
+        tmp = scratch / "result.json.tmp"
+        tmp.write_text(json.dumps(result, indent=2, sort_keys=True))
+        os.replace(tmp, scratch / "result.json")
+        return result
+
+    complete = False
     try:
         with sensors:
             for paper in rounds:
@@ -525,23 +545,19 @@ def cmd_run(a) -> None:
                     resident[m] = resident[m] and res
                     vram[m] = max(vram[m], v)
                     latency[m] += lat
+                stop_reason = f"in corso: round {rounds_done}/{len(rounds)} completato"
+                snapshot(False)
             else:
-                stop_reason = "domande finite"
+                stop_reason, complete = "domande finite", rounds_done > 0
     except Exception as exc:  # difetto imprevisto: l'esito dei round completi resta scritto, poi l'errore risale
         stop_reason = f"eccezione non prevista dopo {rounds_done} round: {exc!r}"
         log("run_crashed", error=repr(exc), rounds_completed=rounds_done)
         raise
+    except BaseException:  # interruzione dell'operatore (SIGINT/SIGTERM): esito parziale, nessun vincitore
+        stop_reason = f"interrotta dopo {rounds_done} round"
+        raise
     finally:
-        admitted = {m for m in a.models if rounds_done and resident[m] and vram[m]}
-        result = {
-            "stop_reason": stop_reason, "rounds_completed": rounds_done, "scores": scores,
-            "method": {"prior": f"Beta({PRIOR_CORRECT}, {PRIOR_WRONG})", "mc_samples": MC_SAMPLES, "mc_seed": MC_SEED},
-            "admitted": sorted(admitted), "vram": vram,
-            "latency_mean_s": {m: sum(v) / len(v) for m, v in latency.items() if v},
-            "peak_vram_mib": sensors.peak_vram_mib, "peak_gpu_c": sensors.peak_gpu_c, "peak_cpu_c": sensors.peak_cpu_c,
-            "decision": pick_winner(scores, vram, admitted),
-        }
-        (scratch / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True))
+        result = snapshot(complete)
         log("result", **result["decision"], stop_reason=stop_reason)
 
 

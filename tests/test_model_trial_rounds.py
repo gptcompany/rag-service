@@ -12,7 +12,7 @@ from tests.test_model_trial_transport import write_scratch
 def test_ogni_round_completo_e_su_disco_prima_del_successivo(tmp_path, monkeypatch):
     seen = []
 
-    def ask(host, model, ctx, question, hot):
+    def ask(host, model, ctx, question):
         path = tmp_path / "rounds.jsonl"
         seen.append(len(path.read_text().splitlines()) if path.exists() else 0)
         return {"answer": "x", "paper": "p"}, 1.0, {"size": 10, "size_vram": 10}
@@ -27,7 +27,7 @@ def test_ogni_round_completo_e_su_disco_prima_del_successivo(tmp_path, monkeypat
 def test_eccezione_inattesa_lascia_comunque_il_risultato_dei_round_completi(tmp_path, monkeypatch):
     calls = []
 
-    def ask(host, model, ctx, question, hot):
+    def ask(host, model, ctx, question):
         calls.append(1)
         if len(calls) == 2:
             raise RuntimeError("difetto imprevisto")

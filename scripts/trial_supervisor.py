@@ -36,6 +36,8 @@ SENSOR_READ_TIMEOUT_S = 10
 UNLOAD_TIMEOUT_S = 30
 # LIMITE di reattivita': verifica che il gruppo sia sparito 20 volte al secondo, costo nullo.
 GROUP_POLL_S = 0.05
+# LIMITE di reattivita': il registro e' diagnostica, non sicurezza; se stderr non accetta la riga entro 1 s si prosegue senza.
+LOG_WAIT_S = 1.0
 
 
 class SensorError(Exception):
@@ -51,10 +53,21 @@ class Outcome:
 
 
 def log(event: str, **fields) -> None:
-    try:
-        print(json.dumps({"t": round(time.time(), 3), "event": event, **fields}, sort_keys=True), file=sys.stderr, flush=True)
-    except OSError:
-        pass  # stderr chiuso o disco pieno: arresto e scarico dei modelli non devono dipendere dal registro
+    """Una riga JSON su stderr, ma mai a spese della sicurezza: la scrittura va in un thread e si attende al piu' LOG_WAIT_S
+    (pipe piena e lettore fermo bloccano print() senza sollevare), un errore di scrittura non salta arresto e scarico."""
+    line = json.dumps({"t": round(time.time(), 3), "event": event, **fields}, sort_keys=True)
+    done = threading.Event()
+
+    def write() -> None:
+        try:
+            print(line, file=sys.stderr, flush=True)
+        except OSError:
+            pass  # stderr chiuso o disco pieno
+        finally:
+            done.set()
+
+    threading.Thread(target=write, daemon=True).start()
+    done.wait(LOG_WAIT_S)
 
 
 def _positive(value: float, what: str) -> float:
@@ -134,8 +147,16 @@ def _group_alive(pgid: int) -> bool:
             state, _ppid, group = stat.read_text().rsplit(")", 1)[1].split()[:3]  # dopo ")" perche' il nome puo' contenere spazi
         except (OSError, ValueError):
             continue  # il processo e' sparito mentre lo si leggeva
-        if state != "Z" and int(group) == pgid:
+        if int(group) != pgid:
+            continue
+        if state != "Z":
             return True
+        for task in (stat.parent / "task").glob("[0-9]*/stat"):  # leader zombie: i suoi thread possono girare ancora
+            try:
+                if task.read_text().rsplit(")", 1)[1].split()[0] != "Z":
+                    return True
+            except (OSError, IndexError):
+                continue
     return False
 
 
